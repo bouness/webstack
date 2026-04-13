@@ -1,0 +1,486 @@
+name: Build WebStack Release
+
+# Triggers:
+#   • Pushing a version tag  (git tag v1.2.3 && git push --tags)
+#   • Manual dispatch with an optional version override
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g. v1.0.0)'
+        required: false
+        default: 'v0.0.0-dev'
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Concurrency: cancel any in-progress build for the same ref so duplicate
+# pushes don't queue up and eat runner minutes.
+# ─────────────────────────────────────────────────────────────────────────────
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Where the stack is compiled inside the runner
+  BUILD_INSTALL_DIR: /opt/webstack-build
+  # Final tarball name (without extension)
+  TARBALL_STEM: webstack-linux-x86_64
+
+jobs:
+  # ───────────────────────────────────────────────────────────────────────────
+  # JOB 1 — compile
+  # Run on Ubuntu 22.04 (glibc 2.35) so the binaries work on most modern
+  # Linux distros (Arch, Fedora 38+, Debian 12+, Ubuntu 22.04+).
+  # ───────────────────────────────────────────────────────────────────────────
+  compile:
+    name: Compile stack on Ubuntu 22.04
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180          # 3 h ceiling; typical build ~90 min
+
+    steps:
+      # ── Checkout ────────────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── Cache compiled output ───────────────────────────────────────────────
+      # We cache the entire compiled tree keyed on a hash of the installer
+      # script.  If the script hasn't changed the whole compile step is
+      # skipped — the cache is restored and we go straight to packaging.
+      - name: Cache compiled webstack
+        id: cache-build
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.BUILD_INSTALL_DIR }}
+          key: webstack-build-${{ hashFiles('install-webstack.sh') }}-ubuntu22
+
+      # ── System build dependencies ───────────────────────────────────────────
+      - name: Install build tools
+        if: steps.cache-build.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential gcc g++ make pkg-config \
+            wget curl ca-certificates \
+            git bison flex \
+            python3 python3-pip \
+            libreadline-dev \
+            libsystemd-dev \
+            xz-utils bzip2 zip unzip \
+            patchelf                  # needed for RPATH rewriting
+
+      # ── Compile ─────────────────────────────────────────────────────────────
+      - name: Compile WebStack (full build)
+        if: steps.cache-build.outputs.cache-hit != 'true'
+        run: |
+          # Install into a fixed path; users will extract to any location and
+          # the relocate step rewrites paths afterwards.
+          export WEBSTACK_HOME="${{ env.BUILD_INSTALL_DIR }}"
+
+          # Patch STACK_DIR in the installer to the build path for this run
+          sed "s|STACK_DIR=\"\$HOME/webstack\"|STACK_DIR=\"$WEBSTACK_HOME\"|g" \
+              install-webstack.sh > /tmp/install-build.sh
+          chmod +x /tmp/install-build.sh
+
+          # Run non-interactively (skip the "Continue? (y/n)" prompt)
+          echo "y" | bash /tmp/install-build.sh
+
+      # ── Strip binaries ──────────────────────────────────────────────────────
+      - name: Strip debug symbols
+        if: steps.cache-build.outputs.cache-hit != 'true'
+        run: |
+          WEBSTACK="${{ env.BUILD_INSTALL_DIR }}"
+          echo "Stripping binaries in $WEBSTACK ..."
+
+          # Strip ELF executables and shared libraries; ignore errors for
+          # already-stripped or non-ELF files.
+          find "$WEBSTACK" -type f \( -name "*.so*" -o -perm /0111 \) \
+            ! -path "*/php/*/etc/*" \
+            ! -name "*.php" \
+            ! -name "*.py" \
+            ! -name "*.sh" \
+          | while read -r f; do
+              if file "$f" | grep -qE 'ELF.*(executable|shared object)'; then
+                strip --strip-unneeded "$f" 2>/dev/null || true
+              fi
+            done
+
+          echo "Stripping complete."
+
+      # ── Remove build artefacts not needed at runtime ────────────────────────
+      - name: Prune build-only files
+        if: steps.cache-build.outputs.cache-hit != 'true'
+        run: |
+          WEBSTACK="${{ env.BUILD_INSTALL_DIR }}"
+          # Source tarballs and extracted build dirs bloat the tarball by ~4 GB
+          rm -rf "$WEBSTACK/build"
+          rm -rf "$WEBSTACK/downloads"
+          # Remove static libs and .la files (only shared libs needed at runtime)
+          find "$WEBSTACK/deps/lib" -name "*.a"  -delete 2>/dev/null || true
+          find "$WEBSTACK/deps/lib" -name "*.la" -delete 2>/dev/null || true
+          find "$WEBSTACK/postgresql/lib" -name "*.a" -delete 2>/dev/null || true
+          # Remove include headers (not needed at runtime)
+          rm -rf "$WEBSTACK/deps/include"
+          rm -rf "$WEBSTACK/postgresql/include"
+          echo "Pruning complete."
+
+      # ── Inject relocate script ──────────────────────────────────────────────
+      # The tarball is extracted to an arbitrary path. This script is run once
+      # after extraction to rewrite every hardcoded path inside the stack.
+      - name: Inject relocate.sh
+        run: |
+          WEBSTACK="${{ env.BUILD_INSTALL_DIR }}"
+          cat > "$WEBSTACK/relocate.sh" << 'RELOCATE_EOF'
+          #!/bin/bash
+          # relocate.sh  — run once after extracting the webstack tarball.
+          # Rewrites every hardcoded path from the build-time location to the
+          # current directory.
+          set -e
+
+          SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+          OLD_PREFIX="@@BUILD_PREFIX@@"    # filled in by the workflow
+          NEW_PREFIX="$SCRIPT_DIR"
+
+          if [ "$OLD_PREFIX" = "$NEW_PREFIX" ]; then
+              echo "Already at the correct prefix — nothing to do."
+              exit 0
+          fi
+
+          echo "Relocating WebStack from $OLD_PREFIX → $NEW_PREFIX ..."
+
+          # 1. Rewrite RPATH in all ELF binaries using patchelf
+          if command -v patchelf &>/dev/null; then
+              find "$NEW_PREFIX" -type f | while read -r f; do
+                  if file "$f" 2>/dev/null | grep -qE 'ELF.*(executable|shared object)'; then
+                      OLD_RPATH=$(patchelf --print-rpath "$f" 2>/dev/null || true)
+                      if echo "$OLD_RPATH" | grep -q "$OLD_PREFIX"; then
+                          NEW_RPATH="${OLD_RPATH//$OLD_PREFIX/$NEW_PREFIX}"
+                          patchelf --set-rpath "$NEW_RPATH" "$f" 2>/dev/null || true
+                      fi
+                  fi
+              done
+              echo "RPATH rewrite complete."
+          else
+              echo "WARNING: patchelf not found. ELF RPATH will not be updated."
+              echo "Install patchelf and re-run this script, or set LD_LIBRARY_PATH manually:"
+              echo "  export LD_LIBRARY_PATH=\"$NEW_PREFIX/deps/lib:\$LD_LIBRARY_PATH\""
+          fi
+
+          # 2. Rewrite text files: configs, scripts, pkg-config .pc files
+          TEXT_EXTS=("*.sh" "*.conf" "*.cnf" "*.pc" "*.ini" "nginx.conf" "my.cnf")
+          for pattern in "${TEXT_EXTS[@]}"; do
+              find "$NEW_PREFIX" -type f -name "$pattern" | while read -r f; do
+                  if grep -qF "$OLD_PREFIX" "$f" 2>/dev/null; then
+                      sed -i "s|$OLD_PREFIX|$NEW_PREFIX|g" "$f"
+                  fi
+              done
+          done
+
+          # 3. Rewrite ~/.local/bin symlinks so they point to new location
+          LOCAL_BIN="$HOME/.local/bin"
+          mkdir -p "$LOCAL_BIN"
+          for script in start stop php mysql psql; do
+              src="$NEW_PREFIX/bin/webstack-${script}.sh"
+              dst="$LOCAL_BIN/webstack-${script}"
+              # Only create/update if the source exists
+              if [ -f "$src" ]; then
+                  ln -sf "$src" "$dst"
+              fi
+          done
+
+          # 4. Rewrite the env.sh to use the new prefix
+          ENV_SH="$NEW_PREFIX/env.sh"
+          if [ -f "$ENV_SH" ]; then
+              sed -i "s|$OLD_PREFIX|$NEW_PREFIX|g" "$ENV_SH"
+          fi
+
+          # 5. Re-initialize PostgreSQL data directory if it was built with
+          #    the old prefix hardcoded in pg_hba.conf / postgresql.conf
+          PG_CONF="$NEW_PREFIX/postgresql/data/postgresql.conf"
+          PG_HBA="$NEW_PREFIX/postgresql/data/pg_hba.conf"
+          if [ -f "$PG_CONF" ]; then
+              sed -i "s|$OLD_PREFIX|$NEW_PREFIX|g" "$PG_CONF"
+          fi
+          if [ -f "$PG_HBA" ]; then
+              sed -i "s|$OLD_PREFIX|$NEW_PREFIX|g" "$PG_HBA"
+          fi
+
+          echo ""
+          echo "Relocation complete. WebStack is now at: $NEW_PREFIX"
+          echo ""
+          echo "Next steps:"
+          echo "  source $NEW_PREFIX/env.sh   # load environment"
+          echo "  $NEW_PREFIX/bin/start.sh     # start all services"
+          echo ""
+          RELOCATE_EOF
+
+          # Fill in the build-time prefix so relocate.sh knows what to replace
+          sed -i "s|@@BUILD_PREFIX@@|$WEBSTACK|g" "$WEBSTACK/relocate.sh"
+          chmod +x "$WEBSTACK/relocate.sh"
+
+      # ── Build self-extracting installer ────────────────────────────────────
+      # We use a makeself-style approach: a shell header + base64-encoded
+      # tar.xz payload, all in a single .sh file.  No external tool required
+      # on the target machine beyond bash, tar, and xz.
+      - name: Build self-extracting installer
+        run: |
+          WEBSTACK="${{ env.BUILD_INSTALL_DIR }}"
+          STEM="${{ env.TARBALL_STEM }}"
+          OUTDIR="/tmp/dist"
+          mkdir -p "$OUTDIR"
+
+          # --- plain tarball (for advanced users) ---
+          echo "Creating plain tarball ..."
+          tar -C "$(dirname $WEBSTACK)" \
+              --xz \
+              --checkpoint=1000 --checkpoint-action=dot \
+              -cf "$OUTDIR/$STEM.tar.xz" \
+              "$(basename $WEBSTACK)"
+          echo ""
+          echo "Plain tarball: $(du -sh $OUTDIR/$STEM.tar.xz | cut -f1)"
+
+          # --- self-extracting installer ---
+          echo "Creating self-extracting installer ..."
+
+          HEADER=$(cat << 'SFX_HEADER_EOF'
+          #!/bin/bash
+          # WebStack Self-Extracting Installer
+          # Generated by GitHub Actions — do not edit manually.
+          set -e
+
+          RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
+          log()  { echo -e "${GREEN}[WebStack]${NC} $1"; }
+          warn() { echo -e "${YELLOW}[WebStack]${NC} $1"; }
+          err()  { echo -e "${RED}[WebStack]${NC} $1"; }
+
+          INSTALL_DIR="${WEBSTACK_INSTALL_DIR:-$HOME/webstack}"
+
+          echo ""
+          echo "╔══════════════════════════════════════════════╗"
+          echo "║         WebStack Installer                   ║"
+          echo "║   Nginx · PHP 8.2/8.3/8.4 · MariaDB · PgSQL ║"
+          echo "╚══════════════════════════════════════════════╝"
+          echo ""
+          echo "Install location: $INSTALL_DIR"
+          echo "Override with:    WEBSTACK_INSTALL_DIR=/your/path bash $0"
+          echo ""
+
+          if [ -d "$INSTALL_DIR" ]; then
+              warn "Directory $INSTALL_DIR already exists."
+              read -p "Overwrite? (yes/no) " -r CONFIRM
+              if [ "$CONFIRM" != "yes" ]; then
+                  err "Installation cancelled."
+                  exit 1
+              fi
+              rm -rf "$INSTALL_DIR"
+          fi
+
+          # Check for required tools
+          for tool in tar xz bash; do
+              if ! command -v "$tool" &>/dev/null; then
+                  err "Required tool not found: $tool"
+                  exit 1
+              fi
+          done
+
+          mkdir -p "$INSTALL_DIR"
+
+          log "Extracting WebStack (this may take a minute) ..."
+          PAYLOAD_LINE=$(awk '/^__PAYLOAD_BELOW__/{print NR+1; exit}' "$0")
+          tail -n +"$PAYLOAD_LINE" "$0" | base64 -d | tar -xJ -C "$(dirname $INSTALL_DIR)"
+
+          # Rename extracted dir to the user's chosen install dir name if different
+          EXTRACTED="$(dirname $INSTALL_DIR)/webstack-build"
+          if [ -d "$EXTRACTED" ] && [ "$EXTRACTED" != "$INSTALL_DIR" ]; then
+              mv "$EXTRACTED" "$INSTALL_DIR"
+          fi
+
+          log "Relocating paths to $INSTALL_DIR ..."
+          bash "$INSTALL_DIR/relocate.sh"
+
+          # Add ~/.local/bin to PATH in shell rc if not already there
+          LOCAL_BIN="$HOME/.local/bin"
+          EXPORT_LINE='export PATH="$HOME/.local/bin:$PATH"'
+          for RC in "$HOME/.bashrc" "$HOME/.zshrc"; do
+              if [ -f "$RC" ] && ! grep -qF "$EXPORT_LINE" "$RC"; then
+                  echo "" >> "$RC"
+                  echo "# WebStack" >> "$RC"
+                  echo "$EXPORT_LINE" >> "$RC"
+                  log "Added PATH entry to $RC"
+              fi
+          done
+
+          # Install desktop entry for cp.py if python3/pyside6 are present
+          DESKTOP_DIR="$HOME/.local/share/applications"
+          mkdir -p "$DESKTOP_DIR"
+          if command -v python3 &>/dev/null && python3 -c "import PySide6" 2>/dev/null; then
+              CP_PY="$INSTALL_DIR/cp.py"
+              if [ -f "$CP_PY" ]; then
+                  cat > "$DESKTOP_DIR/webstack-manager.desktop" << DESKTOP_EOF
+          [Desktop Entry]
+          Name=WebStack Manager
+          Comment=Manage your local web development stack
+          Exec=python3 $CP_PY
+          Icon=$INSTALL_DIR/icon.png
+          Terminal=false
+          Type=Application
+          Categories=Development;WebDevelopment;
+          DESKTOP_EOF
+                  update-desktop-database "$DESKTOP_DIR" 2>/dev/null || true
+                  log "Desktop entry installed"
+              fi
+          fi
+
+          echo ""
+          echo "══════════════════════════════════════════════"
+          log "WebStack installed to: $INSTALL_DIR"
+          echo ""
+          echo "  webstack-start    — start all services"
+          echo "  webstack-stop     — stop all services"
+          echo "  webstack-php VER  — switch PHP version"
+          echo "  webstack-mysql    — MariaDB client"
+          echo "  webstack-psql     — PostgreSQL client (user: postgres / pw: 123456)"
+          echo ""
+          echo "  Web root : $INSTALL_DIR/www"
+          echo "  URL      : http://localhost:8080"
+          echo ""
+          echo "Open a new terminal or run:  source ~/.bashrc"
+          echo "Then run:                    webstack-start"
+          echo "══════════════════════════════════════════════"
+          echo ""
+          exit 0
+          __PAYLOAD_BELOW__
+          SFX_HEADER_EOF
+          )
+
+          SFX="$OUTDIR/$STEM-installer.sh"
+          echo "$HEADER" > "$SFX"
+
+          # Encode the tarball as base64 and append it
+          base64 "$OUTDIR/$STEM.tar.xz" >> "$SFX"
+          chmod +x "$SFX"
+
+          echo "Self-extracting installer: $(du -sh $SFX | cut -f1)"
+
+          # Generate SHA256 checksums
+          cd "$OUTDIR"
+          sha256sum "$STEM.tar.xz" "$STEM-installer.sh" > SHA256SUMS
+          cat SHA256SUMS
+
+          # Save output dir path for subsequent steps
+          echo "OUTDIR=$OUTDIR" >> "$GITHUB_ENV"
+          echo "STEM=$STEM"     >> "$GITHUB_ENV"
+
+      # ── Determine release version ───────────────────────────────────────────
+      - name: Determine version string
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            VERSION="${GITHUB_REF#refs/tags/}"
+          else
+            VERSION="${{ github.event.inputs.version }}"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Version: $VERSION"
+
+      # ── Create GitHub Release ───────────────────────────────────────────────
+      - name: Create GitHub Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name:     ${{ steps.version.outputs.version }}
+          release_name: WebStack ${{ steps.version.outputs.version }}
+          draft: false
+          prerelease:   ${{ contains(steps.version.outputs.version, '-dev') || contains(steps.version.outputs.version, '-rc') }}
+          body: |
+            ## WebStack ${{ steps.version.outputs.version }}
+
+            A fully isolated local web development stack — no system packages required.
+
+            ### Includes
+            | Component   | Version |
+            |-------------|---------|
+            | Nginx       | ${{ env.NGINX_VERSION }}  |
+            | PHP         | 8.4, 8.3, 8.2 |
+            | MariaDB     | ${{ env.MARIADB_VERSION }} |
+            | PostgreSQL  | ${{ env.POSTGRESQL_VERSION }} |
+            | OpenSSL     | ${{ env.OPENSSL_VERSION }} |
+
+            ### Quick install
+            ```bash
+            # Self-extracting installer (recommended):
+            wget https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.version }}/${{ env.TARBALL_STEM }}-installer.sh
+            bash ${{ env.TARBALL_STEM }}-installer.sh
+
+            # Or: plain tarball + manual relocate:
+            tar -xJf ${{ env.TARBALL_STEM }}.tar.xz
+            bash webstack/relocate.sh
+            ```
+
+            ### Requirements
+            - Linux x86_64
+            - glibc ≥ 2.35 (Ubuntu 22.04+, Arch, Fedora 38+, Debian 12+)
+            - bash, tar, xz
+            - `patchelf` recommended for full relocation support
+
+            ### PostgreSQL default credentials
+            - User: `postgres`  Password: `123456`  Database: `webstack`
+
+            ### Checksums
+            See `SHA256SUMS` attached below.
+
+      # ── Upload release assets ───────────────────────────────────────────────
+      - name: Upload plain tarball
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url:         ${{ steps.create_release.outputs.upload_url }}
+          asset_path:         /tmp/dist/${{ env.TARBALL_STEM }}.tar.xz
+          asset_name:         ${{ env.TARBALL_STEM }}.tar.xz
+          asset_content_type: application/x-xz
+
+      - name: Upload self-extracting installer
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url:         ${{ steps.create_release.outputs.upload_url }}
+          asset_path:         /tmp/dist/${{ env.TARBALL_STEM }}-installer.sh
+          asset_name:         ${{ env.TARBALL_STEM }}-installer.sh
+          asset_content_type: application/x-sh
+
+      - name: Upload SHA256SUMS
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url:         ${{ steps.create_release.outputs.upload_url }}
+          asset_path:         /tmp/dist/SHA256SUMS
+          asset_name:         SHA256SUMS
+          asset_content_type: text/plain
+
+      # ── Upload cp.py (GUI control panel) ───────────────────────────────────
+      - name: Upload GUI control panel
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url:         ${{ steps.create_release.outputs.upload_url }}
+          asset_path:         cp.py
+          asset_name:         webstack-manager.py
+          asset_content_type: text/x-python
+
+      # ── Upload uninstaller ─────────────────────────────────────────────────
+      - name: Upload uninstaller
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url:         ${{ steps.create_release.outputs.upload_url }}
+          asset_path:         uninstall-webstack.sh
+          asset_name:         uninstall-webstack.sh
+          asset_content_type: application/x-sh
