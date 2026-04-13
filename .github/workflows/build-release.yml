@@ -56,19 +56,27 @@ jobs:
           key: webstack-build-${{ hashFiles('install-webstack.sh') }}-ubuntu22
 
       # ── System build dependencies ───────────────────────────────────────────
+      # Install ONLY what's needed to run the compiler and download tools.
+      # Deliberately NOT installing libpsl-dev, libbrotli-dev, libnghttp2-dev,
+      # libldap-dev, or any other library that curl/PHP configure auto-detects —
+      # those would cause "found on system but not in our deps" configure failures.
       - name: Install build tools
         if: steps.cache-build.outputs.cache-hit != 'true'
         run: |
           sudo apt-get update -qq
+          # Remove system libs that conflict with our isolated build by being
+          # auto-detected during configure but missing from $DEPS_DIR
+          sudo apt-get remove -y --purge \
+            libpsl-dev libbrotli-dev libnghttp2-dev \
+            libldap-dev libsasl2-dev libkrb5-dev \
+            libzstd-dev liblzma-dev 2>/dev/null || true
           sudo apt-get install -y --no-install-recommends \
             build-essential gcc g++ make pkg-config \
             wget curl ca-certificates \
             git bison flex \
-            python3 python3-pip \
-            libreadline-dev \
-            libsystemd-dev \
+            python3 \
             xz-utils bzip2 zip unzip \
-            patchelf                  # needed for RPATH rewriting
+            patchelf
 
       # ── Compile ─────────────────────────────────────────────────────────────
       - name: Compile WebStack (full build)
