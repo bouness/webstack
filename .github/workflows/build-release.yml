@@ -82,6 +82,11 @@ jobs:
       - name: Compile WebStack (full build)
         if: steps.cache-build.outputs.cache-hit != 'true'
         run: |
+          # Raise file descriptor limit before anything runs.
+          # mariadbd --bootstrap opens many fds; the default 1024 on GitHub
+          # Actions causes "Broken pipe" failures in mariadb-install-db.
+          ulimit -n 65536 || true
+
           # Install into a fixed path; users will extract to any location and
           # the relocate step rewrites paths afterwards.
           export WEBSTACK_HOME="${{ env.BUILD_INSTALL_DIR }}"
