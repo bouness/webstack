@@ -474,9 +474,23 @@ build_curl() {
 
     cd "$BUILD_DIR/curl-$CURL_VERSION"
 
+    # --without-libpsl: libpsl (Public Suffix List) is auto-detected from the
+    # system on Ubuntu runners and then fails because it's not in our $DEPS_DIR.
+    # We don't need it — it's only used by curl's cookie engine for domain
+    # isolation, not by PHP's curl extension.
+    # --without-brotli, --without-zstd: same problem — system libs detected,
+    # not in our build. PHP doesn't need these transfer encodings via libcurl.
+    # --without-nghttp2: avoids detecting system nghttp2 which we didn't compile.
+    # --disable-ldap: never needed, avoids system libldap detection.
     ./configure --prefix="$DEPS_DIR" \
         --with-openssl="$DEPS_DIR" \
-        --with-zlib="$DEPS_DIR" || {
+        --with-zlib="$DEPS_DIR" \
+        --without-libpsl \
+        --without-brotli \
+        --without-zstd \
+        --without-nghttp2 \
+        --disable-ldap \
+        --disable-ldaps || {
         log_error "curl configure failed"
         return 1
     }
@@ -1809,11 +1823,7 @@ EOF
 # Create test page
 create_test_page() {
     cat > "$STACK_DIR/www/index.php" << 'EOF'
-<?php
-if (isset($_GET['info'])) {
-    phpinfo();
-} else {
-?><!DOCTYPE html>
+<!DOCTYPE html>
 <html>
 <head>
     <title>Portable Web Stack</title>
@@ -1825,20 +1835,13 @@ if (isset($_GET['info'])) {
         table { width: 100%; border-collapse: collapse; margin: 20px 0; }
         th, td { padding: 12px; text-align: left; border-bottom: 1px solid #ddd; }
         th { background: #f5f5f5; }
-        .btn{display:inline-block;padding:10px 16px;background-color:#2563eb;color:#fff;text-decoration:none;border-radius:6px;font-weight:500;transition:background 0.2s ease,transform 0.1s ease;}
-        .btn:hover{background-color:#1d4ed8;}
-        .btn:active{transform:scale(0.98);}
-        .btn-secondary{background-color:#6b7280;}
-        .btn-secondary:hover{background-color:#4b5563;}
-        .btn-danger{background-color:#dc2626;}
-        .btn-danger:hover{background-color:#b91c1c;}
     </style>
 </head>
 <body>
     <div class="container">
         <h1>🚀 Portable Web Stack is Running!</h1>
         <div class="info">
-            <strong>PHP Version:</strong> <a title="See phpinfo()" href="/index.php?info=1"><?php echo phpversion(); ?></a><br>
+            <strong>PHP Version:</strong> <?php echo phpversion(); ?><br>
             <strong>Server:</strong> <?php echo $_SERVER['SERVER_SOFTWARE']; ?><br>
             <strong>Document Root:</strong> <?php echo $_SERVER['DOCUMENT_ROOT']; ?>
         </div>
@@ -1858,9 +1861,9 @@ if (isset($_GET['info'])) {
             ?>
         </table>
     </div>
-    <p><a href="/index.php?info=1" class="btn">SEE PHP INFO</a></p>
+<?php phpinfo(); ?>
 </body>
-</html><?php } ?>
+</html>
 EOF
 }
 
