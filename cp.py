@@ -174,6 +174,10 @@ class WebStackManager(QMainWindow):
         self.mysql_status.setStyleSheet("color: red; font-weight: bold;")
         status_layout.addRow("MariaDB:", self.mysql_status)
         
+        self.pgsql_status = QLabel("Stopped")
+        self.pgsql_status.setStyleSheet("color: red; font-weight: bold;")
+        status_layout.addRow("PostgreSQL:", self.pgsql_status)
+        
         layout.addWidget(status_group)
         
         # Quick actions
@@ -298,6 +302,30 @@ class WebStackManager(QMainWindow):
         mysql_layout.addWidget(self.mysql_test_btn)
         
         layout.addWidget(mysql_group)
+        
+        # PostgreSQL control
+        pgsql_group = QGroupBox("PostgreSQL Control")
+        pgsql_layout = QHBoxLayout(pgsql_group)
+        
+        self.pgsql_start_btn = QPushButton("Start")
+        self.pgsql_start_btn.clicked.connect(lambda: self.start_service("postgresql"))
+        pgsql_layout.addWidget(self.pgsql_start_btn)
+        
+        self.pgsql_stop_btn = QPushButton("Stop")
+        self.pgsql_stop_btn.clicked.connect(lambda: self.stop_service("postgresql"))
+        pgsql_layout.addWidget(self.pgsql_stop_btn)
+        
+        self.pgsql_restart_btn = QPushButton("Restart")
+        self.pgsql_restart_btn.clicked.connect(lambda: self.restart_service("postgresql"))
+        pgsql_layout.addWidget(self.pgsql_restart_btn)
+        
+        pgsql_layout.addStretch()
+        
+        self.pgsql_test_btn = QPushButton("Test PostgreSQL")
+        self.pgsql_test_btn.clicked.connect(self.test_postgresql)
+        pgsql_layout.addWidget(self.pgsql_test_btn)
+        
+        layout.addWidget(pgsql_group)
         
         # Environment section
         env_group = QGroupBox("Environment Configuration")
@@ -427,6 +455,12 @@ class WebStackManager(QMainWindow):
         self.mysql_port.valueChanged.connect(self.on_ports_changed)
         config_layout.addRow("MySQL Port:", self.mysql_port)
         
+        self.pgsql_port = QSpinBox()
+        self.pgsql_port.setRange(1024, 65535)
+        self.pgsql_port.setValue(5432)
+        self.pgsql_port.valueChanged.connect(self.on_ports_changed)
+        config_layout.addRow("PostgreSQL Port:", self.pgsql_port)
+        
         # Apply ports button
         self.apply_ports_btn = QPushButton("Apply Port Changes")
         self.apply_ports_btn.clicked.connect(self.apply_port_changes)
@@ -478,6 +512,7 @@ class WebStackManager(QMainWindow):
         try:
             nginx_port = self.nginx_port.value()
             mysql_port = self.mysql_port.value()
+            pgsql_port = self.pgsql_port.value()
             
             # Update Nginx configuration
             self.update_nginx_port(nginx_port)
@@ -485,15 +520,19 @@ class WebStackManager(QMainWindow):
             # Update MySQL configuration  
             self.update_mysql_port(mysql_port)
             
+            # Update PostgreSQL configuration
+            self.update_postgresql_port(pgsql_port)
+            
             # Update web URL display
             self.web_url.setText(f"http://localhost:{nginx_port}")
             
             self.apply_ports_btn.setEnabled(False)
-            self.log_message(f"Applied port changes: Nginx={nginx_port}, MySQL={mysql_port}")
+            self.log_message(f"Applied port changes: Nginx={nginx_port}, MySQL={mysql_port}, PostgreSQL={pgsql_port}")
             QMessageBox.information(self, "Port Changes", 
                                 f"Port changes applied successfully!\n\n"
                                 f"Nginx: {nginx_port}\n"
-                                f"MySQL: {mysql_port}\n\n"
+                                f"MySQL: {mysql_port}\n"
+                                f"PostgreSQL: {pgsql_port}\n\n"
                                 f"Restart services for changes to take effect.")
                                 
         except Exception as e:
@@ -608,7 +647,7 @@ http {{
         log_controls = QHBoxLayout()
         
         self.log_combo = QComboBox()
-        self.log_combo.addItems(["nginx", "php", "mysql", "system"])
+        self.log_combo.addItems(["nginx", "php", "mysql", "postgresql", "system"])
         self.log_combo.currentTextChanged.connect(self.load_log)
         log_controls.addWidget(QLabel("Log:"))
         log_controls.addWidget(self.log_combo)
@@ -999,7 +1038,9 @@ socket={mysql_dir}/mariadb.sock
             "Nginx": stack_path / "nginx" / "nginx",
             "MariaDB safe": stack_path / "mariadb" / "bin" / "mariadbd-safe",
             "MariaDB daemon": stack_path / "mariadb" / "bin" / "mariadbd",
-            "PHP": stack_path / "php"
+            "PHP": stack_path / "php",
+            "PostgreSQL pg_ctl": stack_path / "postgresql" / "bin" / "pg_ctl",
+            "PostgreSQL data": stack_path / "postgresql" / "data"
         }
         
         for name, path in components.items():
@@ -1285,6 +1326,7 @@ socket={mysql_dir}/mariadb.sock
         # Load ports
         self.nginx_port.setValue(self.settings.value("nginx_port", 8080, type=int))
         self.mysql_port.setValue(self.settings.value("mysql_port", 3306, type=int))
+        self.pgsql_port.setValue(self.settings.value("pgsql_port", 5432, type=int))
         
         # Update web URL with loaded port
         nginx_port = self.settings.value("nginx_port", 8080, type=int)
@@ -1316,6 +1358,7 @@ socket={mysql_dir}/mariadb.sock
         self.settings.setValue("auto_clean_temp", self.auto_clean_temp.isChecked())
         self.settings.setValue("nginx_port", self.nginx_port.value())
         self.settings.setValue("mysql_port", self.mysql_port.value())
+        self.settings.setValue("pgsql_port", self.pgsql_port.value())
         
         QMessageBox.information(self, "Settings", "Settings saved successfully!")
         
@@ -1425,6 +1468,14 @@ socket={mysql_dir}/mariadb.sock
         else:
             self.mysql_status.setText("Stopped")
             self.mysql_status.setStyleSheet("color: red; font-weight: bold;")
+            
+        # Check PostgreSQL via postmaster.pid
+        if self.check_postgresql_status():
+            self.pgsql_status.setText("Running")
+            self.pgsql_status.setStyleSheet("color: green; font-weight: bold;")
+        else:
+            self.pgsql_status.setText("Stopped")
+            self.pgsql_status.setStyleSheet("color: red; font-weight: bold;")
 
     def check_stack_health(self):
         """Check overall stack health"""
@@ -1442,6 +1493,9 @@ socket={mysql_dir}/mariadb.sock
             
         if not (Path(self.stack_dir) / "mariadb" / "bin" / "mariadbd-safe").exists():
             issues.append("MariaDB missing")
+            
+        if not (Path(self.stack_dir) / "postgresql" / "bin" / "postgres").exists():
+            issues.append("PostgreSQL missing")
             
         # Check PHP
         php_dir = Path(self.stack_dir) / "php"
@@ -1497,6 +1551,25 @@ socket={mysql_dir}/mariadb.sock
                                 "-y", str(php_current / "etc" / "php-fpm.conf")],
                                 env=env)
                 
+            elif service == "postgresql":
+                pg_bin = Path(self.stack_dir) / "postgresql" / "bin"
+                pg_ctl = pg_bin / "pg_ctl"
+                pgdata = Path(self.stack_dir) / "postgresql" / "data"
+                pglog = Path(self.stack_dir) / "postgresql" / "logs" / "postgresql.log"
+                
+                if not pg_ctl.exists():
+                    QMessageBox.warning(self, "Start PostgreSQL", "PostgreSQL pg_ctl not found!")
+                    return
+                if not pgdata.exists() or not (pgdata / "PG_VERSION").exists():
+                    QMessageBox.warning(self, "Start PostgreSQL",
+                        "PostgreSQL data directory not initialized.\n"
+                        "Re-run the installer to run configure_postgresql.")
+                    return
+                    
+                pglog.parent.mkdir(parents=True, exist_ok=True)
+                subprocess.Popen([str(pg_ctl), "-D", str(pgdata),
+                                  "-l", str(pglog), "start"], env=env)
+                
             elif service == "mysql":
                 mysql_safe = Path(self.stack_dir) / "mariadb" / "bin" / "mariadbd-safe"
                 if not mysql_safe.exists():
@@ -1543,6 +1616,13 @@ socket={mysql_dir}/mariadb.sock
                         pid = int(f.read().strip())
                     os.kill(pid, signal.SIGTERM)
                     
+            elif service == "postgresql":
+                pg_ctl = Path(self.stack_dir) / "postgresql" / "bin" / "pg_ctl"
+                pgdata = Path(self.stack_dir) / "postgresql" / "data"
+                if pg_ctl.exists() and pgdata.exists():
+                    subprocess.run([str(pg_ctl), "-D", str(pgdata), "stop"],
+                                   capture_output=True, text=True, env=env)
+                    
             elif service == "mysql":
                 mysql_admin = Path(self.stack_dir) / "mariadb" / "bin" / "mariadb-admin"
                 mysql_socket = Path(self.stack_dir) / "mariadb" / "mariadb.sock"
@@ -1584,6 +1664,7 @@ socket={mysql_dir}/mariadb.sock
         if self.auto_load_env.isChecked():
             self.load_environment()
             
+        self.start_service("postgresql")
         self.start_service("mysql")
         QTimer.singleShot(2000, lambda: self.start_service("php"))
         QTimer.singleShot(4000, lambda: self.start_service("nginx"))
@@ -1594,6 +1675,7 @@ socket={mysql_dir}/mariadb.sock
         self.stop_service("nginx")
         self.stop_service("php")
         self.stop_service("mysql")
+        self.stop_service("postgresql")
         
         # Auto-cleanup if enabled
         if self.auto_clean_logs.isChecked():
@@ -1636,7 +1718,8 @@ socket={mysql_dir}/mariadb.sock
         try:
             log_dirs = [
                 Path(self.stack_dir) / "nginx" / "logs",
-                Path(self.stack_dir) / "mariadb" / "logs"
+                Path(self.stack_dir) / "mariadb" / "logs",
+                Path(self.stack_dir) / "postgresql" / "logs"
             ]
             
             # Add PHP log directories
@@ -1741,6 +1824,8 @@ socket={mysql_dir}/mariadb.sock
                 log_file = Path(self.stack_dir) / "php" / "current" / "logs" / "php-fpm.log"
             elif log_type == "mysql":
                 log_file = Path(self.stack_dir) / "mariadb" / "logs" / "error.log"
+            elif log_type == "postgresql":
+                log_file = Path(self.stack_dir) / "postgresql" / "logs" / "postgresql.log"
             else:  # system
                 # Show application log
                 self.log_view.setPlainText(self.get_application_log())
@@ -1771,6 +1856,8 @@ socket={mysql_dir}/mariadb.sock
                 log_file = Path(self.stack_dir) / "php" / "current" / "logs" / "php-fpm.log"
             elif log_type == "mysql":
                 log_file = Path(self.stack_dir) / "mariadb" / "logs" / "error.log"
+            elif log_type == "postgresql":
+                log_file = Path(self.stack_dir) / "postgresql" / "logs" / "postgresql.log"
             else:
                 return
                 
@@ -1811,6 +1898,72 @@ socket={mysql_dir}/mariadb.sock
                 return f.read()
         return "No application log entries yet."
         
+    def check_postgresql_status(self):
+        """Check if PostgreSQL is running via postmaster.pid"""
+        pgdata = Path(self.stack_dir) / "postgresql" / "data"
+        pid_file = pgdata / "postmaster.pid"
+        if not pid_file.exists():
+            return False
+        try:
+            with open(pid_file, "r") as f:
+                pid = int(f.readline().strip())
+            # Verify the PID is actually alive
+            os.kill(pid, 0)
+            return True
+        except (ValueError, ProcessLookupError, PermissionError, OSError):
+            return False
+
+    def test_postgresql(self):
+        """Test PostgreSQL connection"""
+        try:
+            env = self.get_environment()
+            psql = Path(self.stack_dir) / "postgresql" / "bin" / "psql"
+            if not psql.exists():
+                QMessageBox.warning(self, "Test PostgreSQL", "psql binary not found!")
+                return
+                
+            result = subprocess.run(
+                [str(psql), "-U", "postgres", "-c", "SELECT version();"],
+                capture_output=True, text=True, env=env, timeout=5
+            )
+            
+            if result.returncode == 0:
+                version_line = result.stdout.strip().split("\n")[2].strip() if result.stdout else ""
+                QMessageBox.information(self, "Test PostgreSQL",
+                    f"PostgreSQL test passed!\n\n{version_line}")
+            else:
+                QMessageBox.critical(self, "Test PostgreSQL",
+                    f"PostgreSQL test failed:\n{result.stderr.strip()}")
+        except subprocess.TimeoutExpired:
+            QMessageBox.critical(self, "Test PostgreSQL",
+                "Connection timed out - is PostgreSQL running?")
+        except Exception as e:
+            QMessageBox.critical(self, "Test PostgreSQL", f"Error testing PostgreSQL: {e}")
+
+    def update_postgresql_port(self, port):
+        """Update PostgreSQL port in postgresql.conf"""
+        pgdata = Path(self.stack_dir) / "postgresql" / "data"
+        pg_conf = pgdata / "postgresql.conf"
+        
+        if not pg_conf.exists():
+            self.log_message("postgresql.conf not found - PostgreSQL may not be initialized")
+            return
+            
+        with open(pg_conf, "r") as f:
+            content = f.read()
+        
+        import re
+        # Replace or insert port line
+        if re.search(r"^#?port\s*=", content, re.MULTILINE):
+            content = re.sub(r"^#?port\s*=.*$", f"port = {port}", content, flags=re.MULTILINE)
+        else:
+            content += f"\nport = {port}\n"
+        
+        with open(pg_conf, "w") as f:
+            f.write(content)
+        
+        self.log_message(f"Updated PostgreSQL port to {port}")
+
     def closeEvent(self, event):
         """Handle application close"""
         if self.auto_stop.isChecked():
