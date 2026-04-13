@@ -18,31 +18,68 @@ DEPS_DIR="$STACK_DIR/deps"
 DOWNLOAD_DIR="$STACK_DIR/downloads"
 
 # Version configurations - "8.4.13" "8.3.26" "8.2.28" "8.1.32"
-PHP_VERSIONS=("8.4.13" "8.3.26" "8.2.28")
-NGINX_VERSION="1.28.0"
-MARIADB_VERSION="11.4.9"
+PHP_VERSIONS=("8.4.20" "8.3.30" "8.2.30")
+NGINX_VERSION="1.28.3"
+MARIADB_VERSION="11.8.6"
 
 # Dependency versions (will be compiled)
 OPENSSL_VERSION="3.1.4"
 PCRE2_VERSION="10.42"
 ZLIB_VERSION="1.3"
 LIBXML2_VERSION="2.11.5"
-CURL_VERSION="8.4.0"
+CURL_VERSION="8.19.0"
 ONIGURUMA_VERSION="6.9.10"
 SQLITE_VERSION="3440000"  # 3.44.0
 LIBZIP_VERSION="1.10.1"
 LIBPNG_VERSION="1.6.40"
 LIBJPEG_VERSION="9e"
 FREETYPE_VERSION="2.13.2"
-ICU_VERSION="76_1"
+ICU_VERSION="78.1"
 NCURSES_VERSION="6.4"
 LIBAIO_VERSION="0.3.113"
 CMAKE_VERSION="3.27.7"
+POSTGRESQL_VERSION="17.9"
+SODIUM_VERSION="1.0.22"
 
 # Logging functions
 log_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
 log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
+
+# Set build flags that point to our deps WITHOUT leaking LD_LIBRARY_PATH.
+# Using -rpath bakes the library search path into each compiled binary so
+# it finds our libs at runtime without needing LD_LIBRARY_PATH at all.
+setup_build_flags() {
+    export PKG_CONFIG_PATH="$DEPS_DIR/lib/pkgconfig:$DEPS_DIR/share/pkgconfig"
+    export PATH="$DEPS_DIR/bin:$PATH"
+    export CPPFLAGS="-I$DEPS_DIR/include"
+    # --as-needed: only link libraries actually referenced directly.
+    # This stops transitive pulls like libfreetype->libfontconfig->libglib
+    # ->pcre2, which drags in system glib and conflicts with our PCRE2.
+    export LDFLAGS="-L$DEPS_DIR/lib -Wl,-rpath,$DEPS_DIR/lib -Wl,--as-needed"
+    export CFLAGS="-O2"
+    export CXXFLAGS="-O2"
+    # Explicitly unset LD_LIBRARY_PATH so the system linker never accidentally
+    # resolves system library dependencies (e.g. glib -> pcre2) against our
+    # private copies.
+    unset LD_LIBRARY_PATH
+}
+
+# Temporarily clear our custom flags when invoking tools that must link
+# purely against system libraries (e.g. download helpers).
+with_system_env() {
+    local OLD_CPPFLAGS="$CPPFLAGS"
+    local OLD_LDFLAGS="$LDFLAGS"
+    local OLD_PKG_CONFIG_PATH="$PKG_CONFIG_PATH"
+    unset CPPFLAGS LDFLAGS
+    export PKG_CONFIG_PATH=""
+    "$@"
+    local ret=$?
+    export CPPFLAGS="$OLD_CPPFLAGS"
+    export LDFLAGS="$OLD_LDFLAGS"
+    export PKG_CONFIG_PATH="$OLD_PKG_CONFIG_PATH"
+    return $ret
+}
 
 # Check if running as root
 if [ "$EUID" -eq 0 ]; then
@@ -174,9 +211,11 @@ safe_download() {
     cd "$BUILD_DIR"
     log_info "Downloading $filename..."
 
-    # Temporarily unset LD_LIBRARY_PATH to avoid conflicts
+    # Temporarily clear custom flags so system wget/curl link against system libs only
     local OLD_LD_LIBRARY_PATH="$LD_LIBRARY_PATH"
-    unset LD_LIBRARY_PATH
+    local OLD_LDFLAGS="$LDFLAGS"
+    local OLD_CPPFLAGS="$CPPFLAGS"
+    unset LD_LIBRARY_PATH LDFLAGS CPPFLAGS
 
     # Try multiple download methods
     wget -q --show-progress "$url" || \
@@ -190,6 +229,8 @@ safe_download() {
     }
 
     export LD_LIBRARY_PATH="$OLD_LD_LIBRARY_PATH"
+    export LDFLAGS="$OLD_LDFLAGS"
+    export CPPFLAGS="$OLD_CPPFLAGS"
 
     # Copy to downloads directory for future use
     cp "$BUILD_DIR/$filename" "$DOWNLOAD_DIR/$filename" 2>/dev/null || true
@@ -479,26 +520,18 @@ build_oniguruma() {
 
     cd "$BUILD_DIR/onig-$ONIGURUMA_VERSION"
 
-    # Add flags to suppress warnings-as-errors
-    export CFLAGS="-O2 -Wno-error"
-
-    ./configure --prefix="$DEPS_DIR" || {
+    ./configure --prefix="$DEPS_DIR" CFLAGS="-O2 -Wno-error" || {
         log_error "oniguruma configure failed"
-        unset CFLAGS
         return 1
     }
     make -j$(nproc) || {
         log_error "oniguruma build failed"
-        unset CFLAGS
         return 1
     }
     make install || {
         log_error "oniguruma install failed"
-        unset CFLAGS
         return 1
     }
-
-    unset CFLAGS
 
     mark_completed "oniguruma"
 
@@ -710,7 +743,13 @@ build_freetype() {
 
     cd "$BUILD_DIR/freetype-$FREETYPE_VERSION"
 
-    ./configure --prefix="$DEPS_DIR" || {
+    # --without-harfbuzz: harfbuzz pulls fontconfig->glib->pcre2@PCRE2_10.47
+    # (system version), conflicting with our compiled PCRE2 10.42.
+    # --without-brotli: avoids pulling system libbrotli.
+    # PHP GD only needs basic font rendering; neither is required for image work.
+    ./configure --prefix="$DEPS_DIR" \
+        --without-harfbuzz \
+        --without-brotli || {
         log_error "freetype configure failed"
         return 1
     }
@@ -737,7 +776,7 @@ build_icu() {
 
     log_info "Building ICU..."
 
-    local filename="icu4c-${ICU_VERSION}-src.tgz"
+    local filename="icu4c-${ICU_VERSION}-sources.tgz"
 
     safe_download \
         "https://github.com/unicode-org/icu/releases/download/release-${ICU_VERSION}/$filename" \
@@ -865,6 +904,128 @@ build_libaio() {
     log_info "libaio built successfully"
 }
 
+# Build PostgreSQL (libpq + server)
+build_postgresql() {
+    if is_completed "postgresql"; then
+        log_info "PostgreSQL already built - skipping"
+        return 0
+    fi
+
+    log_info "Building PostgreSQL $POSTGRESQL_VERSION (libpq + server)..."
+
+    local filename="postgresql-$POSTGRESQL_VERSION.tar.gz"
+
+    safe_download \
+        "https://ftp.postgresql.org/pub/source/v$POSTGRESQL_VERSION/$filename" \
+        "$filename" || return 1
+
+    cd "$BUILD_DIR"
+
+    if [ ! -d "postgresql-$POSTGRESQL_VERSION" ]; then
+        tar -xzf "$filename" || {
+            log_error "Failed to extract PostgreSQL"
+            return 1
+        }
+    fi
+
+    cd "$BUILD_DIR/postgresql-$POSTGRESQL_VERSION"
+
+    # --without-readline avoids system readline/ncurses conflict.
+    # --without-icu avoids a second ICU link; PHP uses our ICU directly.
+    # We build the full server so pg_ctl/initdb are available, but PHP only
+    # needs libpq from $DEPS_DIR/lib and headers from $DEPS_DIR/include.
+    ./configure --prefix="$STACK_DIR/postgresql" \
+        --with-openssl \
+        --with-openssl-dir="$DEPS_DIR" \
+        --without-readline \
+        --without-icu \
+        --without-ldap \
+        --without-gssapi || {
+        log_error "PostgreSQL configure failed"
+        return 1
+    }
+
+    # Build only the libraries and server binaries we need
+    make -j$(nproc) -C src/interfaces/libpq || {
+        log_error "PostgreSQL libpq build failed"
+        return 1
+    }
+    make -j$(nproc) -C src/bin/pg_ctl || {
+        log_warn "pg_ctl build failed (non-fatal)"
+    }
+    make -j$(nproc) -C src/bin/initdb || {
+        log_warn "initdb build failed (non-fatal)"
+    }
+    make -j$(nproc) || {
+        log_error "PostgreSQL full build failed"
+        return 1
+    }
+    make install || {
+        log_error "PostgreSQL install failed"
+        return 1
+    }
+
+    # Symlink libpq into $DEPS_DIR so PHP configure finds it via --with-pgsql
+    ln -sf "$STACK_DIR/postgresql/lib/libpq.so"* "$DEPS_DIR/lib/" 2>/dev/null || true
+    ln -sf "$STACK_DIR/postgresql/lib/libpq.a"  "$DEPS_DIR/lib/" 2>/dev/null || true
+    cp -rn "$STACK_DIR/postgresql/include/." "$DEPS_DIR/include/" 2>/dev/null || true
+    # pkg-config file
+    mkdir -p "$DEPS_DIR/lib/pkgconfig"
+    cp "$STACK_DIR/postgresql/lib/pkgconfig/libpq.pc" "$DEPS_DIR/lib/pkgconfig/" 2>/dev/null || true
+
+    mark_completed "postgresql"
+    log_info "PostgreSQL built successfully"
+}
+
+# Build libsodium
+build_sodium() {
+    if is_completed "sodium"; then
+        log_info "libsodium already built - skipping"
+        return 0
+    fi
+    log_info "Building libsodium $SODIUM_VERSION..."
+
+    local filename="libsodium-$SODIUM_VERSION.tar.gz"
+
+    # Try multiple mirrors
+    safe_download \
+        "https://download.libsodium.org/libsodium/releases/$filename" \
+        "$filename" || \
+    safe_download \
+        "https://github.com/jedisct1/libsodium/releases/download/$SODIUM_VERSION/$filename" \
+        "$filename" || return 1
+
+    cd "$BUILD_DIR"
+
+    if [ ! -d "libsodium-$SODIUM_VERSION" ]; then
+        tar -xzf "$filename" || {
+            log_error "Failed to extract libsodium"
+            return 1
+        }
+    fi
+
+    cd "$BUILD_DIR/libsodium-$SODIUM_VERSION"
+
+    ./configure --prefix="$DEPS_DIR" --disable-shared --enable-static || {
+        log_error "libsodium configure failed"
+        return 1
+    }
+
+    make -j$(nproc) || {
+        log_error "libsodium build failed"
+        return 1
+    }
+
+    make install || {
+        log_error "libsodium install failed"
+        return 1
+    }
+
+    mark_completed "sodium"
+
+    log_info "libsodium built successfully"
+}
+
 # Build all dependencies
 build_all_dependencies() {
     if is_completed "dependencies"; then
@@ -874,13 +1035,12 @@ build_all_dependencies() {
 
     log_info "Building all dependencies (this will take a while)..."
 
-    export PKG_CONFIG_PATH="$DEPS_DIR/lib/pkgconfig:$PKG_CONFIG_PATH"
-    export LD_LIBRARY_PATH="$DEPS_DIR/lib:$LD_LIBRARY_PATH"
-    export PATH="$DEPS_DIR/bin:$PATH"
+    setup_build_flags
 
     # Build in order with error checking
     build_cmake || { log_error "CMake failed"; exit 1; }
     build_zlib || { log_error "zlib failed"; exit 1; }
+    build_sodium || { log_error "Sodium failed"; exit 1; }
     build_openssl || { log_error "OpenSSL failed"; exit 1; }
     build_pcre2 || { log_error "PCRE2 failed"; exit 1; }
     build_libxml2 || { log_error "libxml2 failed"; exit 1; }
@@ -894,6 +1054,7 @@ build_all_dependencies() {
     build_icu || { log_error "ICU failed"; exit 1; }
     build_ncurses || { log_error "ncurses failed"; exit 1; }
     build_libaio || { log_error "libaio failed"; exit 1; }
+    build_postgresql || { log_error "PostgreSQL failed"; exit 1; }
 
     mark_completed "dependencies"
     log_info "All dependencies built successfully"
@@ -908,8 +1069,7 @@ install_nginx() {
 
     log_info "Installing Nginx $NGINX_VERSION..."
 
-    export PKG_CONFIG_PATH="$DEPS_DIR/lib/pkgconfig:$PKG_CONFIG_PATH"
-    export LD_LIBRARY_PATH="$DEPS_DIR/lib:$LD_LIBRARY_PATH"
+    setup_build_flags
 
     download_extract \
         "http://nginx.org/download/nginx-$NGINX_VERSION.tar.gz" \
@@ -1018,9 +1178,7 @@ install_php() {
 
     log_info "Installing PHP $version..."
 
-    export PKG_CONFIG_PATH="$DEPS_DIR/lib/pkgconfig:$PKG_CONFIG_PATH"
-    export LD_LIBRARY_PATH="$DEPS_DIR/lib:$LD_LIBRARY_PATH"
-    export PATH="$DEPS_DIR/bin:$PATH"
+    setup_build_flags
 
     # Use safe_download and manual extraction
     local filename="php-$version.tar.gz"
@@ -1040,6 +1198,13 @@ install_php() {
 
     cd "$BUILD_DIR/php-$version"
 
+    # LIBS=-lz -lm is required for the GD link test: PHP configure probes
+    # GD by compiling a small test binary linking against libpng/libjpeg/
+    # freetype, which in turn depend on zlib and libm. Without LIBS those
+    # transitive deps go unresolved and the probe fails even when all headers
+    # are found. WEBP/AVIF/XPM are disabled because we do not compile them;
+    # leaving them unset causes the GD build test to fail on PHP 8.2+.
+    LIBS="-lz -lm" \
     ./configure \
         --prefix="$STACK_DIR/php/$major_minor" \
         --enable-fpm \
@@ -1049,7 +1214,7 @@ install_php() {
         --with-config-file-scan-dir="$STACK_DIR/php/$major_minor/etc/conf.d" \
         --with-openssl="$DEPS_DIR" \
         --with-curl="$DEPS_DIR" \
-        --with-zlib="$DEPS_DIR" \
+        --with-zlib-dir="$DEPS_DIR" \
         --enable-mbstring \
         --enable-zip \
         --with-zip="$DEPS_DIR" \
@@ -1065,9 +1230,22 @@ install_php() {
         --with-mysqli \
         --with-pdo-mysql \
         --with-pdo-sqlite="$DEPS_DIR" \
+        --with-pgsql="$DEPS_DIR" \
+        --with-pdo-pgsql="$DEPS_DIR" \
         --with-jpeg="$DEPS_DIR" \
+        --with-png-dir="$DEPS_DIR" \
         --with-freetype="$DEPS_DIR" \
         --enable-gd \
+        --without-webp \
+        --without-avif \
+        --without-xpm \
+        --with-zlib="$DEPS_DIR" \
+        --enable-ctype \
+        --with-sodium \
+        --with-xsl \
+        --enable-xml \
+        --enable-opcache \
+        --enable-opcache-jit \
         --with-libxml="$DEPS_DIR" \
         --with-onig="$DEPS_DIR" \
         --disable-cgi || {
@@ -1084,9 +1262,101 @@ install_php() {
         return 1
     }
 
-    # Copy PHP configuration
+    # ── php.ini setup ────────────────────────────────────────────────────────
+    # Copy base php.ini
     if [ -f "php.ini-development" ]; then
         cp php.ini-development "$STACK_DIR/php/$major_minor/etc/php.ini"
+    fi
+
+    # Locate the opcache.so that was just compiled.
+    # The extensions dir name encodes the API version (e.g. no-debug-non-zts-20230831)
+    # and changes between PHP releases, so we find it dynamically.
+    local ext_dir
+    ext_dir=$("$STACK_DIR/php/$major_minor/bin/php-config" --extension-dir 2>/dev/null || true)
+    local opcache_so="$ext_dir/opcache.so"
+
+    if [ -f "$opcache_so" ]; then
+        # OPcache MUST be loaded as a zend_extension, not a normal extension.
+        # It also must appear before any [PHP] section content so it is loaded
+        # first. We prepend it at the very top of php.ini.
+        local tmp_ini
+        tmp_ini=$(mktemp)
+        {
+            echo "[PHP]"
+            echo "zend_extension=\"${opcache_so}\""
+            echo ""
+            # Skip any existing [PHP] header line so we don't duplicate it
+            grep -v '^\[PHP\]' "$STACK_DIR/php/$major_minor/etc/php.ini"
+        } > "$tmp_ini"
+        mv "$tmp_ini" "$STACK_DIR/php/$major_minor/etc/php.ini"
+        log_info "OPcache configured for PHP $major_minor ($opcache_so)"
+    else
+        log_warn "opcache.so not found for PHP $major_minor — OPcache not configured"
+    fi
+
+    # ── conf.d override file ──────────────────────────────────────────────────
+    # Drop a webstack.ini into the scan dir.  Users can edit this file to
+    # tune settings without touching the main php.ini.  It is safe to re-run
+    # the installer; the file is only written if it does not already exist so
+    # manual edits are preserved.
+    local confd="$STACK_DIR/php/$major_minor/etc/conf.d"
+    mkdir -p "$confd"
+
+    if [ ! -f "$confd/webstack.ini" ]; then
+        cat > "$confd/webstack.ini" << 'WEBSTACK_INI_EOF'
+; ============================================================
+; WebStack PHP override settings
+; Edit this file to customise PHP for your projects.
+; Changes take effect after restarting PHP-FPM (webstack-stop / webstack-start).
+; DO NOT edit php.ini directly — use this file instead.
+; ============================================================
+
+; ── Memory & input limits (Moodle recommends >= 256M) ──────
+memory_limit = 256M
+max_input_vars = 5000
+max_input_time = 300
+post_max_size = 256M
+upload_max_filesize = 256M
+
+; ── Execution time ──────────────────────────────────────────
+max_execution_time = 300
+default_socket_timeout = 60
+
+; ── Error handling (development — tighten for production) ───
+error_reporting = E_ALL
+display_errors = On
+display_startup_errors = On
+log_errors = On
+; error_log is set by PHP-FPM pool config
+
+; ── Session ─────────────────────────────────────────────────
+session.gc_maxlifetime = 7200
+session.cookie_secure = 0
+session.cookie_httponly = 1
+
+; ── OPcache tuning ──────────────────────────────────────────
+; The zend_extension line is written to php.ini automatically by the
+; installer.  These directives only take effect when OPcache is loaded.
+opcache.enable = 1
+opcache.enable_cli = 0
+opcache.memory_consumption = 128
+opcache.interned_strings_buffer = 16
+opcache.max_accelerated_files = 10000
+opcache.revalidate_freq = 2
+opcache.save_comments = 1
+; JIT (PHP 8+) — set to 0 to disable
+opcache.jit = tracing
+opcache.jit_buffer_size = 64M
+
+; ── Moodle-specific recommendations ─────────────────────────
+; Moodle requires ctype, xml, soap, intl, zip, gd, mbstring, curl, sodium.
+; All are compiled in.  Uncomment lines below if Moodle warns about them.
+; extension = intl
+; extension = soap
+WEBSTACK_INI_EOF
+        log_info "Created $confd/webstack.ini"
+    else
+        log_info "conf.d/webstack.ini already exists — skipping (preserving edits)"
     fi
 
     # Create PHP-FPM configuration
@@ -1128,9 +1398,7 @@ install_mariadb() {
 
     log_info "Installing MariaDB $MARIADB_VERSION..."
 
-    export PKG_CONFIG_PATH="$DEPS_DIR/lib/pkgconfig:$PKG_CONFIG_PATH"
-    export LD_LIBRARY_PATH="$DEPS_DIR/lib:$LD_LIBRARY_PATH"
-    export PATH="$DEPS_DIR/bin:$PATH"
+    setup_build_flags
 
     download_extract \
         "https://archive.mariadb.org/mariadb-$MARIADB_VERSION/source/mariadb-$MARIADB_VERSION.tar.gz" \
@@ -1144,8 +1412,9 @@ install_mariadb() {
         -DMYSQL_DATADIR="$STACK_DIR/mariadb/data" \
         -DCMAKE_PREFIX_PATH="$DEPS_DIR" \
         -DWITH_SSL="$DEPS_DIR" \
-        -DWITH_ZLIB=system \
-        -DZLIB_ROOT="$DEPS_DIR" \
+        -DWITH_ZLIB=bundled \
+        -DZLIB_INCLUDE_DIR="$DEPS_DIR/include" \
+        -DZLIB_LIBRARY="$DEPS_DIR/lib/libz.so" \
         -DWITH_EMBEDDED_SERVER=OFF \
         -DWITH_UNIT_TESTS=OFF \
         -DPLUGIN_AUTH_GSSAPI_CLIENT=OFF \
@@ -1179,11 +1448,16 @@ install_mariadb() {
         return 1
     }
 
-    # Initialize database
+    # Initialize database.
+    # --auth-root-authentication-method=normal ensures root gets
+    # mysql_native_password (password-based) auth from the start instead of
+    # unix_socket auth.  unix_socket only allows OS-level login which breaks
+    # phpMyAdmin and any PHP app connecting via TCP.
     "$STACK_DIR/mariadb/scripts/mariadb-install-db" \
         --basedir="$STACK_DIR/mariadb" \
         --datadir="$STACK_DIR/mariadb/data" \
-        --user="$USER" || {
+        --user="$USER" \
+        --auth-root-authentication-method=normal || {
         log_error "MariaDB database initialization failed"
         return 1
     }
@@ -1207,11 +1481,148 @@ port = 3306
 socket = $STACK_DIR/mariadb/mariadb.sock
 pid-file = $STACK_DIR/mariadb/mariadb.pid
 log-error = $STACK_DIR/mariadb/logs/error.log
+# Bind to localhost only — allows both socket and 127.0.0.1 TCP connections.
+# PHP/phpMyAdmin must use host=127.0.0.1 (not "localhost") to go via TCP.
+bind-address = 127.0.0.1
+# Skip reverse DNS lookups — prevents auth delays and failures over TCP.
+skip-name-resolve
 
 [client]
 socket = $STACK_DIR/mariadb/mariadb.sock
 port = 3306
 EOF
+}
+
+# Configure MariaDB authentication
+# Starts MariaDB briefly to set the root password and create a dedicated
+# webstack user that phpMyAdmin and PHP apps can connect with.
+configure_mariadb_auth() {
+    if is_completed "mariadb_auth"; then
+        log_info "MariaDB auth already configured - skipping"
+        return 0
+    fi
+
+    log_info "Configuring MariaDB authentication..."
+
+    local MYSQL_BIN="$STACK_DIR/mariadb/bin"
+    local MYSQL_SOCKET="$STACK_DIR/mariadb/mariadb.sock"
+    local ROOT_PASSWORD="123456"
+    local APP_USER="webstack"
+    local APP_PASSWORD="webstack"
+
+    # Start MariaDB temporarily (no password yet — first boot)
+    "$STACK_DIR/mariadb/bin/mariadbd-safe" \
+        --defaults-file="$STACK_DIR/mariadb/my.cnf" \
+        --skip-grant-tables &
+    local MARIADB_PID=$!
+
+    # Wait for socket to appear (up to 30 seconds)
+    local waited=0
+    while [ ! -S "$MYSQL_SOCKET" ] && [ $waited -lt 30 ]; do
+        sleep 1
+        (( waited++ )) || true
+    done
+
+    if [ ! -S "$MYSQL_SOCKET" ]; then
+        log_error "MariaDB did not start in time during auth configuration"
+        kill $MARIADB_PID 2>/dev/null || true
+        return 1
+    fi
+
+    # Flush privileges so we can run user management commands
+    "$MYSQL_BIN/mariadb" --socket="$MYSQL_SOCKET" -u root --connect-expired-password << SQLEOF
+FLUSH PRIVILEGES;
+
+-- Set root password and switch to native password auth
+ALTER USER 'root'@'localhost' IDENTIFIED VIA mysql_native_password USING PASSWORD('$ROOT_PASSWORD');
+
+-- Allow root to connect via 127.0.0.1 TCP (needed by phpMyAdmin)
+CREATE USER IF NOT EXISTS 'root'@'127.0.0.1' IDENTIFIED BY '$ROOT_PASSWORD';
+GRANT ALL PRIVILEGES ON *.* TO 'root'@'127.0.0.1' WITH GRANT OPTION;
+
+-- Create a dedicated app user with full privileges
+CREATE USER IF NOT EXISTS '$APP_USER'@'localhost'   IDENTIFIED BY '$APP_PASSWORD';
+CREATE USER IF NOT EXISTS '$APP_USER'@'127.0.0.1'   IDENTIFIED BY '$APP_PASSWORD';
+GRANT ALL PRIVILEGES ON *.* TO '$APP_USER'@'localhost'   WITH GRANT OPTION;
+GRANT ALL PRIVILEGES ON *.* TO '$APP_USER'@'127.0.0.1'   WITH GRANT OPTION;
+
+FLUSH PRIVILEGES;
+SQLEOF
+
+    # Graceful shutdown
+    "$MYSQL_BIN/mariadb-admin" --socket="$MYSQL_SOCKET" -u root shutdown 2>/dev/null || true
+    wait $MARIADB_PID 2>/dev/null || true
+
+    mark_completed "mariadb_auth"
+    log_info "MariaDB authentication configured"
+    log_info "  root password : $ROOT_PASSWORD"
+    log_info "  app user      : $APP_USER / $APP_PASSWORD"
+    log_info ""
+    log_info "phpMyAdmin connection settings:"
+    log_info "  Server  : 127.0.0.1"
+    log_info "  User    : root  (or: $APP_USER)"
+    log_info "  Password: $ROOT_PASSWORD  (or: $APP_PASSWORD)"
+}
+
+# Configure PostgreSQL - initialize data directory, create postgres superuser
+# with a known password, and create a default database.
+configure_postgresql() {
+    if is_completed "postgresql_configured"; then
+        log_info "PostgreSQL already configured - skipping"
+        return 0
+    fi
+
+    log_info "Configuring PostgreSQL..."
+
+    local PGDATA="$STACK_DIR/postgresql/data"
+    local PGLOG="$STACK_DIR/postgresql/logs"
+    local PG_BIN="$STACK_DIR/postgresql/bin"
+    local PG_PASSWORD="123456"
+
+    mkdir -p "$PGDATA" "$PGLOG"
+
+    # Remove any previous partial init
+    rm -rf "$PGDATA"/*
+
+    # initdb with explicit superuser "postgres" and md5 password auth.
+    # --pwfile feeds the password without it appearing in process list.
+    local pwfile
+    pwfile=$(mktemp)
+    echo "$PG_PASSWORD" > "$pwfile"
+
+    "$PG_BIN/initdb"         -D "$PGDATA"         -U postgres         --pwfile="$pwfile"         --auth=md5         --auth-local=trust         --encoding=UTF8         --locale=C         --no-instructions || {
+        rm -f "$pwfile"
+        log_error "PostgreSQL initdb failed"
+        return 1
+    }
+    rm -f "$pwfile"
+
+    # Append a pg_hba.conf entry that allows password login over TCP for all
+    # users (needed for PHP PDO connections via host=127.0.0.1).
+    cat >> "$PGDATA/pg_hba.conf" << 'HBAEOF'
+# webstack: allow password auth from localhost for all users/databases
+host    all             all             127.0.0.1/32            md5
+host    all             all             ::1/128                 md5
+HBAEOF
+
+    # Start PostgreSQL temporarily to create the default database
+    "$PG_BIN/pg_ctl" -D "$PGDATA" -l "$PGLOG/postgresql.log" start -w || {
+        log_error "PostgreSQL failed to start during configuration"
+        return 1
+    }
+
+    # Create a default "webstack" database owned by postgres
+    "$PG_BIN/createdb" -U postgres webstack 2>/dev/null || true
+
+    # Stop again - will be started properly by start.sh
+    "$PG_BIN/pg_ctl" -D "$PGDATA" stop -w || true
+
+    mark_completed "postgresql_configured"
+    log_info "PostgreSQL configured successfully"
+    log_info "  Superuser : postgres"
+    log_info "  Password  : $PG_PASSWORD"
+    log_info "  Database  : webstack"
+    log_info "  Port      : 5432"
 }
 
 # Create environment setup script
@@ -1220,7 +1631,10 @@ create_env_script() {
 #!/bin/bash
 export WEBSTACK_HOME="$STACK_DIR"
 export PATH="$STACK_DIR/bin:\$PATH"
-export LD_LIBRARY_PATH="$DEPS_DIR/lib:\$LD_LIBRARY_PATH"
+# LD_LIBRARY_PATH is intentionally NOT set here.
+# All binaries have $DEPS_DIR/lib baked in via -rpath at compile time,
+# so they find the right libs automatically without polluting the
+# system linker search path.
 export PKG_CONFIG_PATH="$DEPS_DIR/lib/pkgconfig:\$PKG_CONFIG_PATH"
 EOF
     chmod +x "$STACK_DIR/env.sh"
@@ -1236,9 +1650,23 @@ create_management_scripts() {
 STACK_DIR="STACK_DIR_PLACEHOLDER"
 DEPS_DIR="$STACK_DIR/deps"
 
-export LD_LIBRARY_PATH="$DEPS_DIR/lib:$LD_LIBRARY_PATH"
+# LD_LIBRARY_PATH is not needed - rpath is baked into all compiled binaries.
 
 echo "Starting Web Stack..."
+
+# Start PostgreSQL
+PGDATA="$STACK_DIR/postgresql/data"
+PGLOG="$STACK_DIR/postgresql/logs/postgresql.log"
+if [ ! -f "$PGDATA/PG_VERSION" ]; then
+    # Data dir missing - re-run configure_postgresql via the installer to set up properly.
+    echo "PostgreSQL data directory not found. Please re-run the installer."
+fi
+if [ ! -f "$PGDATA/postmaster.pid" ]; then
+    "$STACK_DIR/postgresql/bin/pg_ctl" -D "$PGDATA" -l "$PGLOG" start
+    echo "PostgreSQL started"
+else
+    echo "PostgreSQL already running"
+fi
 
 # Start MariaDB
 if [ ! -f "$STACK_DIR/mariadb/mariadb.pid" ]; then
@@ -1278,6 +1706,13 @@ EOF
 STACK_DIR="STACK_DIR_PLACEHOLDER"
 
 echo "Stopping Web Stack..."
+
+# Stop PostgreSQL
+PGDATA="$STACK_DIR/postgresql/data"
+if [ -f "$PGDATA/postmaster.pid" ]; then
+    "$STACK_DIR/postgresql/bin/pg_ctl" -D "$PGDATA" stop
+    echo "PostgreSQL stopped"
+fi
 
 # Stop Nginx
 if [ -f "$STACK_DIR/nginx/nginx.pid" ]; then
@@ -1339,9 +1774,21 @@ EOF
 STACK_DIR="STACK_DIR_PLACEHOLDER"
 DEPS_DIR="$STACK_DIR/deps"
 
-export LD_LIBRARY_PATH="$DEPS_DIR/lib:$LD_LIBRARY_PATH"
+# LD_LIBRARY_PATH is not needed - rpath is baked into the mariadb binary.
 
 "$STACK_DIR/mariadb/bin/mysql" --defaults-file="$STACK_DIR/mariadb/my.cnf" "$@"
+EOF
+
+    # PostgreSQL client wrapper - defaults to postgres superuser
+    cat > "$STACK_DIR/bin/psql.sh" << 'EOF'
+#!/bin/bash
+STACK_DIR="STACK_DIR_PLACEHOLDER"
+# Default to postgres superuser if no -U flag is given
+if [[ "$*" != *"-U"* && "$*" != *"--username"* ]]; then
+    exec "$STACK_DIR/postgresql/bin/psql" -U postgres "$@"
+else
+    exec "$STACK_DIR/postgresql/bin/psql" "$@"
+fi
 EOF
 
     # Replace placeholder
@@ -1356,12 +1803,17 @@ EOF
     ln -sf "$STACK_DIR/bin/stop.sh" "$HOME/.local/bin/webstack-stop"
     ln -sf "$STACK_DIR/bin/switch-php.sh" "$HOME/.local/bin/webstack-php"
     ln -sf "$STACK_DIR/bin/mysql.sh" "$HOME/.local/bin/webstack-mysql"
+    ln -sf "$STACK_DIR/bin/psql.sh" "$HOME/.local/bin/webstack-psql"
 }
 
 # Create test page
 create_test_page() {
     cat > "$STACK_DIR/www/index.php" << 'EOF'
-<!DOCTYPE html>
+<?php
+if (isset($_GET['info'])) {
+    phpinfo();
+} else {
+?><!DOCTYPE html>
 <html>
 <head>
     <title>Portable Web Stack</title>
@@ -1373,13 +1825,20 @@ create_test_page() {
         table { width: 100%; border-collapse: collapse; margin: 20px 0; }
         th, td { padding: 12px; text-align: left; border-bottom: 1px solid #ddd; }
         th { background: #f5f5f5; }
+        .btn{display:inline-block;padding:10px 16px;background-color:#2563eb;color:#fff;text-decoration:none;border-radius:6px;font-weight:500;transition:background 0.2s ease,transform 0.1s ease;}
+        .btn:hover{background-color:#1d4ed8;}
+        .btn:active{transform:scale(0.98);}
+        .btn-secondary{background-color:#6b7280;}
+        .btn-secondary:hover{background-color:#4b5563;}
+        .btn-danger{background-color:#dc2626;}
+        .btn-danger:hover{background-color:#b91c1c;}
     </style>
 </head>
 <body>
     <div class="container">
         <h1>🚀 Portable Web Stack is Running!</h1>
         <div class="info">
-            <strong>PHP Version:</strong> <?php echo phpversion(); ?><br>
+            <strong>PHP Version:</strong> <a title="See phpinfo()" href="/index.php?info=1"><?php echo phpversion(); ?></a><br>
             <strong>Server:</strong> <?php echo $_SERVER['SERVER_SOFTWARE']; ?><br>
             <strong>Document Root:</strong> <?php echo $_SERVER['DOCUMENT_ROOT']; ?>
         </div>
@@ -1399,13 +1858,29 @@ create_test_page() {
             ?>
         </table>
     </div>
+    <p><a href="/index.php?info=1" class="btn">SEE PHP INFO</a></p>
 </body>
-</html>
+</html><?php } ?>
 EOF
 }
 
 # Main installation
 main() {
+    # If freetype was previously built without --without-harfbuzz, it will
+    # drag system libglib into the PHP GD link test and cause the
+    # pcre2@PCRE2_10.47 undefined reference error. Force a freetype rebuild
+    # if the old build didn't use the isolation flags, and reset any PHP
+    # versions that failed as a result.
+    if is_completed "freetype" && ! grep -q "without-harfbuzz" "$BUILD_DIR/freetype-$FREETYPE_VERSION/config.log" 2>/dev/null; then
+        log_warn "Detected freetype built without --without-harfbuzz; forcing rebuild to fix GD/glib conflict..."
+        reset_build "freetype"
+        reset_build "dependencies"
+        rm -rf "$BUILD_DIR/freetype-$FREETYPE_VERSION"
+        for php_ver in "${PHP_VERSIONS[@]}"; do
+            reset_build "php-$php_ver"
+        done
+    fi
+
     log_info "Starting Portable Web Stack installation..."
     log_info "Installation directory: $STACK_DIR"
     log_info "Downloads directory: $DOWNLOAD_DIR"
@@ -1457,6 +1932,9 @@ main() {
 
     install_mariadb
     configure_mariadb
+    configure_mariadb_auth
+
+    configure_postgresql
 
     create_env_script
     create_management_scripts
@@ -1475,6 +1953,7 @@ main() {
     echo "  webstack-stop        - Stop all services"
     echo "  webstack-php <ver>   - Switch PHP version"
     echo "  webstack-mysql       - MySQL client"
+  echo "  webstack-psql        - PostgreSQL client"
     echo ""
     echo "Web root: $STACK_DIR/www"
     echo "URL: http://localhost:8080"
