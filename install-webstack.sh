@@ -1514,18 +1514,38 @@ install_mariadb() {
     }
 
     # Initialize database.
-    # --auth-root-authentication-method=normal ensures root gets
-    # mysql_native_password (password-based) auth from the start instead of
-    # unix_socket auth.  unix_socket only allows OS-level login which breaks
-    # phpMyAdmin and any PHP app connecting via TCP.
-    "$STACK_DIR/mariadb/scripts/mariadb-install-db" \
-        --basedir="$STACK_DIR/mariadb" \
-        --datadir="$STACK_DIR/mariadb/data" \
-        --user="$USER" \
-        --auth-root-authentication-method=normal || {
-        log_error "MariaDB database initialization failed"
-        return 1
+    # --auth-root-authentication-method=normal: root gets mysql_native_password
+    # auth so PHP/phpMyAdmin can connect via TCP with a password.
+    # --no-defaults: prevents reading stray system my.cnf files on CI runners
+    # (e.g. /etc/mysql/my.cnf) that conflict with our isolated paths and cause
+    # "Broken pipe" bootstrap failures.
+    # ulimit -n 65536: mariadbd --bootstrap opens many file descriptors;
+    # CI runners default to 1024 which is too low and causes broken pipes.
+    local init_log="$STACK_DIR/mariadb/logs/init.log"
+    mkdir -p "$STACK_DIR/mariadb/logs"
+
+    run_mariadb_init() {
+        ulimit -n 65536 2>/dev/null || true
+        "$STACK_DIR/mariadb/scripts/mariadb-install-db" \
+            --no-defaults \
+            --basedir="$STACK_DIR/mariadb" \
+            --datadir="$STACK_DIR/mariadb/data" \
+            --user="$USER" \
+            --auth-root-authentication-method=normal \
+            --innodb-log-file-size=48M \
+            --innodb-buffer-pool-size=64M \
+            "$@"
     }
+
+    if ! run_mariadb_init 2>&1 | tee "$init_log"; then
+        log_warn "First init attempt failed, retrying with --verbose..."
+        rm -rf "$STACK_DIR/mariadb/data"/*
+        if ! run_mariadb_init --verbose 2>&1 | tee "$init_log"; then
+            log_error "MariaDB database initialization failed"
+            log_error "See: $init_log"
+            return 1
+        fi
+    fi
 
     mark_completed "mariadb"
 
