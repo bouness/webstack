@@ -40,6 +40,7 @@ LIBAIO_VERSION="0.3.113"
 CMAKE_VERSION="3.27.7"
 POSTGRESQL_VERSION="17.9"
 SODIUM_VERSION="1.0.22"
+LIBXSLT_VERSION="1.1.39"
 
 # Logging functions
 log_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
@@ -1040,6 +1041,52 @@ build_sodium() {
     log_info "libsodium built successfully"
 }
 
+# Build libxslt (required for PHP --with-xsl)
+build_libxslt() {
+    if is_completed "libxslt"; then
+        log_info "libxslt already built - skipping"
+        return 0
+    fi
+
+    log_info "Building libxslt $LIBXSLT_VERSION..."
+
+    local filename="libxslt-$LIBXSLT_VERSION.tar.xz"
+
+    safe_download \
+        "https://download.gnome.org/sources/libxslt/1.1/$filename" \
+        "$filename" || return 1
+
+    cd "$BUILD_DIR"
+
+    if [ ! -d "libxslt-$LIBXSLT_VERSION" ]; then
+        tar -xJf "$filename" || {
+            log_error "Failed to extract libxslt"
+            return 1
+        }
+    fi
+
+    cd "$BUILD_DIR/libxslt-$LIBXSLT_VERSION"
+
+    ./configure --prefix="$DEPS_DIR" \
+        --with-libxml-prefix="$DEPS_DIR" \
+        --without-python \
+        --without-crypto || {
+        log_error "libxslt configure failed"
+        return 1
+    }
+    make -j$(nproc) || {
+        log_error "libxslt build failed"
+        return 1
+    }
+    make install || {
+        log_error "libxslt install failed"
+        return 1
+    }
+
+    mark_completed "libxslt"
+    log_info "libxslt built successfully"
+}
+
 # Build all dependencies
 build_all_dependencies() {
     if is_completed "dependencies"; then
@@ -1058,6 +1105,7 @@ build_all_dependencies() {
     build_openssl || { log_error "OpenSSL failed"; exit 1; }
     build_pcre2 || { log_error "PCRE2 failed"; exit 1; }
     build_libxml2 || { log_error "libxml2 failed"; exit 1; }
+    build_libxslt || { log_error "libxslt failed"; exit 1; }
     build_curl || { log_error "curl failed"; exit 1; }
     build_oniguruma || { log_error "oniguruma failed"; exit 1; }
     build_sqlite || { log_error "SQLite failed"; exit 1; }
@@ -1218,6 +1266,13 @@ install_php() {
     # transitive deps go unresolved and the probe fails even when all headers
     # are found. WEBP/AVIF/XPM are disabled because we do not compile them;
     # leaving them unset causes the GD build test to fail on PHP 8.2+.
+    # Flag notes for PHP 8.x:
+    # --with-zlib-dir     removed in PHP 8.0 → zlib via pkg-config (CPPFLAGS/LDFLAGS)
+    # --enable-zip        removed in PHP 8.0 → always built when libzip found
+    # --with-icu-dir      removed in PHP 8.0 → ICU via pkg-config / PATH
+    # --with-png-dir      removed in PHP 7.4 → libpng via pkg-config
+    # --with-onig         still valid in PHP 8; kept as-is
+    # --with-xsl          requires libxslt compiled into $DEPS_DIR
     LIBS="-lz -lm" \
     ./configure \
         --prefix="$STACK_DIR/php/$major_minor" \
@@ -1228,9 +1283,7 @@ install_php() {
         --with-config-file-scan-dir="$STACK_DIR/php/$major_minor/etc/conf.d" \
         --with-openssl="$DEPS_DIR" \
         --with-curl="$DEPS_DIR" \
-        --with-zlib-dir="$DEPS_DIR" \
         --enable-mbstring \
-        --enable-zip \
         --with-zip="$DEPS_DIR" \
         --enable-bcmath \
         --enable-pcntl \
@@ -1238,7 +1291,6 @@ install_php() {
         --enable-exif \
         --enable-calendar \
         --enable-intl \
-        --with-icu-dir="$DEPS_DIR" \
         --enable-soap \
         --enable-sockets \
         --with-mysqli \
@@ -1247,7 +1299,6 @@ install_php() {
         --with-pgsql="$DEPS_DIR" \
         --with-pdo-pgsql="$DEPS_DIR" \
         --with-jpeg="$DEPS_DIR" \
-        --with-png-dir="$DEPS_DIR" \
         --with-freetype="$DEPS_DIR" \
         --enable-gd \
         --without-webp \
@@ -1256,7 +1307,7 @@ install_php() {
         --with-zlib="$DEPS_DIR" \
         --enable-ctype \
         --with-sodium \
-        --with-xsl \
+        --with-xsl="$DEPS_DIR" \
         --enable-xml \
         --enable-opcache \
         --enable-opcache-jit \
@@ -1823,7 +1874,11 @@ EOF
 # Create test page
 create_test_page() {
     cat > "$STACK_DIR/www/index.php" << 'EOF'
-<!DOCTYPE html>
+<?php
+if (isset($_GET['info'])) {
+    phpinfo();
+} else {
+?><!DOCTYPE html>
 <html>
 <head>
     <title>Portable Web Stack</title>
@@ -1835,13 +1890,20 @@ create_test_page() {
         table { width: 100%; border-collapse: collapse; margin: 20px 0; }
         th, td { padding: 12px; text-align: left; border-bottom: 1px solid #ddd; }
         th { background: #f5f5f5; }
+        .btn{display:inline-block;padding:10px 16px;background-color:#2563eb;color:#fff;text-decoration:none;border-radius:6px;font-weight:500;transition:background 0.2s ease,transform 0.1s ease;}
+        .btn:hover{background-color:#1d4ed8;}
+        .btn:active{transform:scale(0.98);}
+        .btn-secondary{background-color:#6b7280;}
+        .btn-secondary:hover{background-color:#4b5563;}
+        .btn-danger{background-color:#dc2626;}
+        .btn-danger:hover{background-color:#b91c1c;}
     </style>
 </head>
 <body>
     <div class="container">
         <h1>🚀 Portable Web Stack is Running!</h1>
         <div class="info">
-            <strong>PHP Version:</strong> <?php echo phpversion(); ?><br>
+            <strong>PHP Version:</strong> <a title="See phpinfo()" href="/index.php?info=1"><?php echo phpversion(); ?></a><br>
             <strong>Server:</strong> <?php echo $_SERVER['SERVER_SOFTWARE']; ?><br>
             <strong>Document Root:</strong> <?php echo $_SERVER['DOCUMENT_ROOT']; ?>
         </div>
@@ -1861,9 +1923,9 @@ create_test_page() {
             ?>
         </table>
     </div>
-<?php phpinfo(); ?>
+    <p><a href="/index.php?info=1" class="btn">SEE PHP INFO</a></p>
 </body>
-</html>
+</html><?php } ?>
 EOF
 }
 
