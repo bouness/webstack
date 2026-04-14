@@ -1585,91 +1585,48 @@ EOF
 # Starts MariaDB briefly to set the root password and create a dedicated
 # webstack user that phpMyAdmin and PHP apps can connect with.
 configure_mariadb_auth() {
-    if is_completed "mariadb_auth"; then
-        log_info "MariaDB auth already configured - skipping"
-        return 0
-    fi
-
-    log_info "Configuring MariaDB authentication..."
+    log_info "Configuring MariaDB authentication (bootstrap)..."
 
     local MYSQL_BIN="$STACK_DIR/mariadb/bin"
-    # Use a temp socket in /tmp so path length is never an issue and it is
-    # guaranteed writable regardless of $STACK_DIR permissions.
-    local TEMP_SOCKET="/tmp/mariadb-setup-$$.sock"
-    local MYSQL_SOCKET="$STACK_DIR/mariadb/mariadb.sock"
+    local AUTH_LOG="$STACK_DIR/mariadb/logs/auth-setup.log"
+
     local ROOT_PASSWORD="123456"
     local APP_USER="webstack"
     local APP_PASSWORD="webstack"
-    local AUTH_LOG="$STACK_DIR/mariadb/logs/auth-setup.log"
+
     mkdir -p "$STACK_DIR/mariadb/logs"
 
-    # Start mariadbd directly (not via mariadbd-safe) so we control the PID
-    # cleanly.  --skip-grant-tables lets us run ALTER USER without a password.
-    # We use a dedicated temp socket so path issues with my.cnf don't interfere.
-    ulimit -n 65536 2>/dev/null || true
     "$MYSQL_BIN/mariadbd" \
         --no-defaults \
+        --bootstrap \
         --basedir="$STACK_DIR/mariadb" \
         --datadir="$STACK_DIR/mariadb/data" \
-        --socket="$TEMP_SOCKET" \
-        --pid-file="/tmp/mariadb-setup-$$.pid" \
-        --skip-networking \
-        --skip-grant-tables \
-        --skip-name-resolve \
-        --innodb-buffer-pool-size=64M \
-        --log-error="$AUTH_LOG" \
-        --daemonize || {
-        log_error "MariaDB failed to start for auth setup. Log: $AUTH_LOG"
-        return 1
-    }
+        --log-error="$AUTH_LOG" <<EOF
 
-    # Wait for temp socket to appear (up to 60 seconds)
-    local waited=0
-    while [ ! -S "$TEMP_SOCKET" ] && [ $waited -lt 60 ]; do
-        sleep 1
-        (( waited++ )) || true
-    done
+FLUSH PRIVILEGES;
 
-    if [ ! -S "$TEMP_SOCKET" ]; then
-        log_error "MariaDB socket did not appear after ${waited}s during auth setup"
-        log_error "Log: $AUTH_LOG"
-        cat "$AUTH_LOG" 2>/dev/null || true
+ALTER USER 'root'@'localhost' IDENTIFIED BY '${ROOT_PASSWORD}';
+
+CREATE USER IF NOT EXISTS 'root'@'127.0.0.1' IDENTIFIED BY '${ROOT_PASSWORD}';
+GRANT ALL PRIVILEGES ON *.* TO 'root'@'127.0.0.1' WITH GRANT OPTION;
+
+CREATE USER IF NOT EXISTS '${APP_USER}'@'localhost' IDENTIFIED BY '${APP_PASSWORD}';
+CREATE USER IF NOT EXISTS '${APP_USER}'@'127.0.0.1' IDENTIFIED BY '${APP_PASSWORD}';
+
+GRANT ALL PRIVILEGES ON *.* TO '${APP_USER}'@'localhost' WITH GRANT OPTION;
+GRANT ALL PRIVILEGES ON *.* TO '${APP_USER}'@'127.0.0.1' WITH GRANT OPTION;
+
+FLUSH PRIVILEGES;
+
+EOF
+
+    if [ $? -ne 0 ]; then
+        log_error "MariaDB bootstrap failed"
+        cat "$AUTH_LOG"
         return 1
     fi
 
-    log_info "MariaDB started for auth setup (${waited}s), configuring users..."
-
-    # Run all user management SQL in one batch
-    "$MYSQL_BIN/mariadb" --socket="$TEMP_SOCKET" -u root << SQLEOF
-FLUSH PRIVILEGES;
-ALTER USER 'root'@'localhost' IDENTIFIED VIA mysql_native_password USING PASSWORD('$ROOT_PASSWORD');
-CREATE USER IF NOT EXISTS 'root'@'127.0.0.1' IDENTIFIED BY '$ROOT_PASSWORD';
-GRANT ALL PRIVILEGES ON *.* TO 'root'@'127.0.0.1' WITH GRANT OPTION;
-CREATE USER IF NOT EXISTS '$APP_USER'@'localhost'  IDENTIFIED BY '$APP_PASSWORD';
-CREATE USER IF NOT EXISTS '$APP_USER'@'127.0.0.1' IDENTIFIED BY '$APP_PASSWORD';
-GRANT ALL PRIVILEGES ON *.* TO '$APP_USER'@'localhost'  WITH GRANT OPTION;
-GRANT ALL PRIVILEGES ON *.* TO '$APP_USER'@'127.0.0.1' WITH GRANT OPTION;
-FLUSH PRIVILEGES;
-SQLEOF
-
-    # Graceful shutdown via the temp socket
-    "$MYSQL_BIN/mariadb-admin" --socket="$TEMP_SOCKET" -u root \
-        --password="$ROOT_PASSWORD" shutdown 2>/dev/null || \
-    "$MYSQL_BIN/mariadb-admin" --socket="$TEMP_SOCKET" -u root \
-        shutdown 2>/dev/null || true
-
-    # Wait for shutdown
-    local sw=0
-    while [ -S "$TEMP_SOCKET" ] && [ $sw -lt 15 ]; do
-        sleep 1; (( sw++ )) || true
-    done
-    rm -f "$TEMP_SOCKET" "/tmp/mariadb-setup-$$.pid"
-
-    mark_completed "mariadb_auth"
     log_info "MariaDB authentication configured"
-    log_info "  root password : $ROOT_PASSWORD"
-    log_info "  app user      : $APP_USER / $APP_PASSWORD"
-    log_info "phpMyAdmin: host=127.0.0.1  user=root  password=$ROOT_PASSWORD"
 }
 
 # Configure PostgreSQL - initialize data directory, create postgres superuser
