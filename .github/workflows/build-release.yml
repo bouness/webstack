@@ -44,6 +44,25 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # ── Extract version numbers from installer script ─────────────────────────
+      # The canonical version values live in install-webstack.sh as shell vars.
+      # This step reads them and writes them to GITHUB_ENV so they are available
+      # as ${{ env.NGINX_VERSION }} etc. in all subsequent steps and the release body.
+      - name: Extract component versions
+        run: |
+          extract() { grep "^${1}_VERSION=" install-webstack.sh | head -1 | cut -d= -f2 | tr -d '"'; }
+          echo "NGINX_VERSION=$(extract NGINX)"                 >> "$GITHUB_ENV"
+          echo "MARIADB_VERSION=$(extract MARIADB)"             >> "$GITHUB_ENV"
+          echo "POSTGRESQL_VERSION=$(extract POSTGRESQL)"       >> "$GITHUB_ENV"
+          echo "OPENSSL_VERSION=$(extract OPENSSL)"             >> "$GITHUB_ENV"
+          echo "SODIUM_VERSION=$(extract SODIUM)"               >> "$GITHUB_ENV"
+          echo "ICU_VERSION=$(extract ICU)"                     >> "$GITHUB_ENV"
+          echo "CURL_VERSION=$(extract CURL)"                   >> "$GITHUB_ENV"
+          echo "LIBXSLT_VERSION=$(extract LIBXSLT)"             >> "$GITHUB_ENV"
+          # PHP versions are an array — extract quoted values and join with spaces
+          PHP_VERS=$(grep "^PHP_VERSIONS=" install-webstack.sh | head -1 | grep -o '"[^"]*"' | tr -d '"' | tr '\n' ' ' | sed 's/ $//')
+          echo "PHP_VERSIONS=$PHP_VERS" >> "$GITHUB_ENV"
+
       # ── Cache compiled output ───────────────────────────────────────────────
       # We cache the entire compiled tree keyed on a hash of the installer
       # script.  If the script hasn't changed the whole compile step is
@@ -367,7 +386,7 @@ jobs:
           SFX_HEADER_EOF
           )
 
-          SFX="$OUTDIR/$STEM-installer.sh"
+          SFX="$OUTDIR/$STEM-installer.run"
           echo "$HEADER" > "$SFX"
 
           # Encode the tarball as base64 and append it
@@ -378,7 +397,7 @@ jobs:
 
           # Generate SHA256 checksums
           cd "$OUTDIR"
-          sha256sum "$STEM.tar.xz" "$STEM-installer.sh" > SHA256SUMS
+          sha256sum "$STEM.tar.xz" "$STEM-installer.run" > SHA256SUMS
           cat SHA256SUMS
 
           # Save output dir path for subsequent steps
@@ -397,17 +416,17 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Version: $VERSION"
 
-      # ── Create GitHub Release ───────────────────────────────────────────────
-      - name: Create GitHub Release
-        id: create_release
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # ── Create GitHub Release and upload all assets ────────────────────────
+      # softprops/action-gh-release@v2 uses the modern GitHub API (no
+      # deprecated set-output commands, no separate upload steps needed).
+      # All assets are attached in a single step via the `files:` list.
+      - name: Create GitHub Release and upload assets
+        uses: softprops/action-gh-release@v2
         with:
-          tag_name:     ${{ steps.version.outputs.version }}
-          release_name: WebStack ${{ steps.version.outputs.version }}
-          draft: false
-          prerelease:   ${{ contains(steps.version.outputs.version, '-dev') || contains(steps.version.outputs.version, '-rc') }}
+          tag_name:   ${{ steps.version.outputs.version }}
+          name:       WebStack ${{ steps.version.outputs.version }}
+          draft:      false
+          prerelease: ${{ contains(steps.version.outputs.version, '-dev') || contains(steps.version.outputs.version, '-rc') }}
           body: |
             ## WebStack ${{ steps.version.outputs.version }}
 
@@ -416,17 +435,22 @@ jobs:
             ### Includes
             | Component   | Version |
             |-------------|---------|
-            | Nginx       | ${{ env.NGINX_VERSION }}  |
-            | PHP         | 8.4, 8.3, 8.2 |
+            | Nginx       | ${{ env.NGINX_VERSION }} |
+            | PHP         | ${{ env.PHP_VERSIONS }} |
             | MariaDB     | ${{ env.MARIADB_VERSION }} |
             | PostgreSQL  | ${{ env.POSTGRESQL_VERSION }} |
             | OpenSSL     | ${{ env.OPENSSL_VERSION }} |
+            | libsodium   | ${{ env.SODIUM_VERSION }} |
+            | ICU         | ${{ env.ICU_VERSION }} |
+            | libcurl     | ${{ env.CURL_VERSION }} |
+            | libxslt     | ${{ env.LIBXSLT_VERSION }} |
 
             ### Quick install
             ```bash
             # Self-extracting installer (recommended):
-            wget https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.version }}/${{ env.TARBALL_STEM }}-installer.sh
-            bash ${{ env.TARBALL_STEM }}-installer.sh
+            wget https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.version }}/${{ env.TARBALL_STEM }}-installer.run
+            chmod +x ${{ env.TARBALL_STEM }}-installer.run
+            ./${{ env.TARBALL_STEM }}-installer.run
 
             # Or: plain tarball + manual relocate:
             tar -xJf ${{ env.TARBALL_STEM }}.tar.xz
@@ -444,56 +468,11 @@ jobs:
 
             ### Checksums
             See `SHA256SUMS` attached below.
-
-      # ── Upload release assets ───────────────────────────────────────────────
-      - name: Upload plain tarball
-        uses: actions/upload-release-asset@v1
+          files: |
+            /tmp/dist/${{ env.TARBALL_STEM }}.tar.xz
+            /tmp/dist/${{ env.TARBALL_STEM }}-installer.run
+            /tmp/dist/SHA256SUMS
+            cp.py
+            uninstall-webstack.sh
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url:         ${{ steps.create_release.outputs.upload_url }}
-          asset_path:         /tmp/dist/${{ env.TARBALL_STEM }}.tar.xz
-          asset_name:         ${{ env.TARBALL_STEM }}.tar.xz
-          asset_content_type: application/x-xz
-
-      - name: Upload self-extracting installer
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url:         ${{ steps.create_release.outputs.upload_url }}
-          asset_path:         /tmp/dist/${{ env.TARBALL_STEM }}-installer.sh
-          asset_name:         ${{ env.TARBALL_STEM }}-installer.sh
-          asset_content_type: application/x-sh
-
-      - name: Upload SHA256SUMS
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url:         ${{ steps.create_release.outputs.upload_url }}
-          asset_path:         /tmp/dist/SHA256SUMS
-          asset_name:         SHA256SUMS
-          asset_content_type: text/plain
-
-      # ── Upload cp.py (GUI control panel) ───────────────────────────────────
-      - name: Upload GUI control panel
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url:         ${{ steps.create_release.outputs.upload_url }}
-          asset_path:         cp.py
-          asset_name:         webstack-manager.py
-          asset_content_type: text/x-python
-
-      # ── Upload uninstaller ─────────────────────────────────────────────────
-      - name: Upload uninstaller
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url:         ${{ steps.create_release.outputs.upload_url }}
-          asset_path:         uninstall-webstack.sh
-          asset_name:         uninstall-webstack.sh
-          asset_content_type: application/x-sh
