@@ -22,6 +22,23 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
 from PySide6.QtCore import QProcess, QTimer, Qt, QSettings
 from PySide6.QtGui import QIcon, QAction, QFont, QPalette, QColor, QPixmap, QPainter, QTextCursor
 
+PHP_ICU_TEST_SCRIPT = """<?php
+if (extension_loaded('intl')) {
+    echo "✓ intl extension loaded\\n";
+    echo "✓ ICU version: " . INTL_ICU_VERSION . "\\n";
+    echo "✓ ICU data version: " . INTL_ICU_DATA_VERSION . "\\n";
+
+    $coll = collator_create('en_US');
+    if ($coll) {
+        echo "✓ Collator created successfully\\n";
+    } else {
+        echo "❌ Collator creation failed\\n";
+    }
+} else {
+    echo "❌ intl extension not loaded\\n";
+}
+?>"""
+
 
 class WebStackManager(QMainWindow):
     def __init__(self):
@@ -971,39 +988,28 @@ socket={mysql_dir}/mariadb.sock
 
     def check_icu_via_php(self):
         """Check ICU functionality via PHP"""
+        import tempfile
+
         try:
             env = self.get_environment()
             php_binary = Path(self.stack_dir) / "php" / "current" / "bin" / "php"
-            
+
             if not php_binary.exists():
                 return "PHP binary not found"
-                
-            # Test ICU functionality with a simple PHP script
-            test_script = """
-            <?php
-            if (extension_loaded('intl')) {
-                echo "✓ intl extension loaded\\n";
-                echo "✓ ICU version: " . INTL_ICU_VERSION . "\\n";
-                echo "✓ ICU data version: " . INTL_ICU_DATA_VERSION . "\\n";
-                
-                // Test basic ICU functionality
-                $coll = collator_create('en_US');
-                if ($coll) {
-                    echo "✓ Collator created successfully\\n";
-                } else {
-                    echo "❌ Collator creation failed\\n";
-                }
-            } else {
-                echo "❌ intl extension not loaded\\n";
-            }
-            ?>
-            """
-            
-            result = subprocess.run([str(php_binary), "-r", test_script], 
-                                capture_output=True, text=True, env=env)
-            
-            return result.stdout
-            
+
+            # Create and execute temp file
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.php', delete=False) as f:
+                f.write(PHP_ICU_TEST_SCRIPT)
+                temp_path = f.name
+
+            try:
+                result = subprocess.run([str(php_binary), temp_path],
+                                    capture_output=True, text=True, env=env)
+                return result.stdout
+            finally:
+                # Always clean up the temp file
+                Path(temp_path).unlink(missing_ok=True)
+
         except Exception as e:
             return f"Error testing ICU: {e}"
 
