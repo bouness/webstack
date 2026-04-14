@@ -2006,7 +2006,9 @@ def main():
     app.setQuitOnLastWindowClosed(False)
     
     # Create and show main window
+    style = app.style()
     window = WebStackManager()
+    window.setWindowIcon(style.standardIcon(QStyle.SP_ComputerIcon))
     
     # Check if start minimized is enabled
     settings = QSettings("WebStack", "Manager")
