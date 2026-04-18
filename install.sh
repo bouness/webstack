@@ -82,7 +82,7 @@ SQLITE_YEAR="2026"
 SQLITE_VERSION="3530000"
 LIBZIP_VERSION="1.11.4"
 LIBPNG_VERSION="1.6.58"
-LIBJPEG_VERSION="10"
+LIBJPEG_VERSION="3.1.0"
 FREETYPE_VERSION="2.14.3"
 ICU_VERSION="78.1"
 NCURSES_VERSION="6.6"
@@ -472,8 +472,9 @@ build_zlib() {
 build_sodium() {
     is_done "sodium" && return 0
     log_info "Building libsodium $SODIUM_VERSION..."
+    # Primary: official download site. Fallback: GitHub (tag has -RELEASE suffix).
     safe_download "https://download.libsodium.org/libsodium/releases/libsodium-$SODIUM_VERSION.tar.gz" "libsodium-$SODIUM_VERSION.tar.gz" || \
-    safe_download "https://github.com/jedisct1/libsodium/releases/download/$SODIUM_VERSION/libsodium-$SODIUM_VERSION.tar.gz" "libsodium-$SODIUM_VERSION.tar.gz" || return 1
+    safe_download "https://github.com/jedisct1/libsodium/releases/download/${SODIUM_VERSION}-RELEASE/libsodium-$SODIUM_VERSION.tar.gz" "libsodium-$SODIUM_VERSION.tar.gz" || return 1
     cd "$BUILD_DIR"; [ ! -d "libsodium-$SODIUM_VERSION" ] && with_system_env tar -xzf "libsodium-$SODIUM_VERSION.tar.gz"
     cd "$BUILD_DIR/libsodium-$SODIUM_VERSION"
     ./configure --prefix="$DEPS_DIR" --libdir="$DEPS_DIR/lib" --disable-shared --enable-static && \
@@ -516,9 +517,17 @@ build_pcre2() {
 build_libxml2() {
     is_done "libxml2" && return 0
     log_info "Building libxml2 $LIBXML2_VERSION..."
-    safe_download "https://download.gnome.org/sources/libxml2/2.15/libxml2-$LIBXML2_VERSION.tar.xz" "libxml2-$LIBXML2_VERSION.tar.xz" || return 1
-    cd "$BUILD_DIR"; [ ! -d "libxml2-$LIBXML2_VERSION" ] && with_system_env tar -xJf "libxml2-$LIBXML2_VERSION.tar.xz"
+    local mm; mm=$(echo "$LIBXML2_VERSION" | cut -d. -f1,2)
+    safe_download "https://github.com/GNOME/libxml2/archive/refs/tags/v$LIBXML2_VERSION.tar.gz" "libxml2-$LIBXML2_VERSION.tar.gz" || \
+    safe_download "https://download.gnome.org/sources/libxml2/$mm/libxml2-$LIBXML2_VERSION.tar.xz" "libxml2-$LIBXML2_VERSION.tar.xz" || return 1
+    cd "$BUILD_DIR"
+    if [ ! -d "libxml2-$LIBXML2_VERSION" ]; then
+        with_system_env tar -xf "libxml2-$LIBXML2_VERSION.tar.gz" 2>/dev/null || \
+        with_system_env tar -xJf "libxml2-$LIBXML2_VERSION.tar.xz"
+    fi
     cd "$BUILD_DIR/libxml2-$LIBXML2_VERSION"
+    # GitHub archive has no configure — run autoreconf if needed
+    [ ! -f configure ] && with_system_env autoreconf -fi
     ./configure --prefix="$DEPS_DIR" --libdir="$DEPS_DIR/lib" --without-python --without-lzma && \
     make -j"$NPROC" && make install && mark_done "libxml2"
 }
@@ -526,9 +535,16 @@ build_libxml2() {
 build_libxslt() {
     is_done "libxslt" && return 0
     log_info "Building libxslt $LIBXSLT_VERSION..."
-    safe_download "https://download.gnome.org/sources/libxslt/1.1/libxslt-$LIBXSLT_VERSION.tar.xz" "libxslt-$LIBXSLT_VERSION.tar.xz" || return 1
-    cd "$BUILD_DIR"; [ ! -d "libxslt-$LIBXSLT_VERSION" ] && with_system_env tar -xJf "libxslt-$LIBXSLT_VERSION.tar.xz"
+    local mm; mm=$(echo "$LIBXSLT_VERSION" | cut -d. -f1,2)
+    safe_download "https://github.com/GNOME/libxslt/archive/refs/tags/v$LIBXSLT_VERSION.tar.gz" "libxslt-$LIBXSLT_VERSION.tar.gz" || \
+    safe_download "https://download.gnome.org/sources/libxslt/$mm/libxslt-$LIBXSLT_VERSION.tar.xz" "libxslt-$LIBXSLT_VERSION.tar.xz" || return 1
+    cd "$BUILD_DIR"
+    if [ ! -d "libxslt-$LIBXSLT_VERSION" ]; then
+        with_system_env tar -xf "libxslt-$LIBXSLT_VERSION.tar.gz" 2>/dev/null || \
+        with_system_env tar -xJf "libxslt-$LIBXSLT_VERSION.tar.xz"
+    fi
     cd "$BUILD_DIR/libxslt-$LIBXSLT_VERSION"
+    [ ! -f configure ] && with_system_env autoreconf -fi
     ./configure --prefix="$DEPS_DIR" --libdir="$DEPS_DIR/lib" \
         --with-libxml-prefix="$DEPS_DIR" --without-python --without-crypto && \
     make -j"$NPROC" && make install && mark_done "libxslt"
@@ -567,7 +583,11 @@ build_oniguruma() {
 build_sqlite() {
     is_done "sqlite" && return 0
     log_info "Building SQLite..."
-    safe_download "https://www.sqlite.org/$SQLITE_YEAR/sqlite-autoconf-$SQLITE_VERSION.tar.gz" "sqlite-autoconf-$SQLITE_VERSION.tar.gz" || return 1
+    # SQLite uses year-based URL paths. Try current year first, then prior year as fallback.
+    local cur_year; cur_year=$(date +%Y)
+    safe_download "https://www.sqlite.org/${cur_year}/sqlite-autoconf-$SQLITE_VERSION.tar.gz" "sqlite-autoconf-$SQLITE_VERSION.tar.gz" || \
+    safe_download "https://www.sqlite.org/$SQLITE_YEAR/sqlite-autoconf-$SQLITE_VERSION.tar.gz" "sqlite-autoconf-$SQLITE_VERSION.tar.gz" || \
+    safe_download "https://www.sqlite.org/$((cur_year-1))/sqlite-autoconf-$SQLITE_VERSION.tar.gz" "sqlite-autoconf-$SQLITE_VERSION.tar.gz" || return 1
     cd "$BUILD_DIR"; [ ! -d "sqlite-autoconf-$SQLITE_VERSION" ] && with_system_env tar -xzf "sqlite-autoconf-$SQLITE_VERSION.tar.gz"
     cd "$BUILD_DIR/sqlite-autoconf-$SQLITE_VERSION"
     ./configure --prefix="$DEPS_DIR" --libdir="$DEPS_DIR/lib" && \
@@ -602,29 +622,48 @@ build_libzip() {
 build_libpng() {
     is_done "libpng" && return 0
     log_info "Building libpng $LIBPNG_VERSION..."
+    safe_download "https://github.com/pnggroup/libpng/archive/refs/tags/v$LIBPNG_VERSION.tar.gz" "libpng-$LIBPNG_VERSION.tar.gz" || \
     safe_download "https://download.sourceforge.net/libpng/libpng-$LIBPNG_VERSION.tar.gz" "libpng-$LIBPNG_VERSION.tar.gz" || return 1
     cd "$BUILD_DIR"; [ ! -d "libpng-$LIBPNG_VERSION" ] && with_system_env tar -xzf "libpng-$LIBPNG_VERSION.tar.gz"
     cd "$BUILD_DIR/libpng-$LIBPNG_VERSION"
+    [ ! -f configure ] && with_system_env autoreconf -fi
     ./configure --prefix="$DEPS_DIR" --libdir="$DEPS_DIR/lib" && \
     make -j"$NPROC" && make install && mark_done "libpng"
 }
 
 build_libjpeg() {
     is_done "libjpeg" && return 0
-    log_info "Building libjpeg $LIBJPEG_VERSION..."
-    safe_download "http://www.ijg.org/files/jpegsrc.v$LIBJPEG_VERSION.tar.gz" "jpegsrc.v$LIBJPEG_VERSION.tar.gz" || return 1
-    cd "$BUILD_DIR"; [ ! -d "jpeg-$LIBJPEG_VERSION" ] && with_system_env tar -xzf "jpegsrc.v$LIBJPEG_VERSION.tar.gz"
-    cd "$BUILD_DIR/jpeg-$LIBJPEG_VERSION"
-    ./configure --prefix="$DEPS_DIR" --libdir="$DEPS_DIR/lib" && \
+    log_info "Building libjpeg-turbo $LIBJPEG_VERSION..."
+    safe_download "https://github.com/libjpeg-turbo/libjpeg-turbo/releases/download/$LIBJPEG_VERSION/libjpeg-turbo-$LIBJPEG_VERSION.tar.gz" "libjpeg-turbo-$LIBJPEG_VERSION.tar.gz" || return 1
+    cd "$BUILD_DIR"; [ ! -d "libjpeg-turbo-$LIBJPEG_VERSION" ] && with_system_env tar -xzf "libjpeg-turbo-$LIBJPEG_VERSION.tar.gz"
+    cd "$BUILD_DIR/libjpeg-turbo-$LIBJPEG_VERSION"
+    mkdir -p build_cmake && cd build_cmake
+    "$DEPS_DIR/bin/cmake" .. \
+        -DCMAKE_INSTALL_PREFIX="$DEPS_DIR" \
+        -DCMAKE_INSTALL_LIBDIR="$DEPS_DIR/lib" \
+        -DCMAKE_PREFIX_PATH="$DEPS_DIR" \
+        -DENABLE_SHARED=ON -DENABLE_STATIC=ON \
+        -DWITH_TURBOJPEG=OFF && \
     make -j"$NPROC" && make install && mark_done "libjpeg"
 }
 
 build_freetype() {
     is_done "freetype" && return 0
     log_info "Building freetype $FREETYPE_VERSION..."
+    # GitHub tag uses dashes: VER-2-14-3
+    local ft_tag; ft_tag="VER-$(echo "$FREETYPE_VERSION" | tr '.' '-')"
+    safe_download "https://github.com/freetype/freetype/archive/refs/tags/${ft_tag}.tar.gz" "freetype-$FREETYPE_VERSION.tar.gz" || \
     safe_download "https://download.savannah.gnu.org/releases/freetype/freetype-$FREETYPE_VERSION.tar.gz" "freetype-$FREETYPE_VERSION.tar.gz" || return 1
-    cd "$BUILD_DIR"; [ ! -d "freetype-$FREETYPE_VERSION" ] && with_system_env tar -xzf "freetype-$FREETYPE_VERSION.tar.gz"
+    cd "$BUILD_DIR"
+    if [ ! -d "freetype-$FREETYPE_VERSION" ]; then
+        with_system_env tar -xzf "freetype-$FREETYPE_VERSION.tar.gz"
+        # GitHub archive extracts as freetype-VER-2-14-3 — rename to expected dir
+        local extracted_dir; extracted_dir=$(find "$BUILD_DIR" -maxdepth 1 -type d -name "freetype-*" | head -1)
+        [ -n "$extracted_dir" ] && [ "$extracted_dir" != "$BUILD_DIR/freetype-$FREETYPE_VERSION" ] && \
+            mv "$extracted_dir" "$BUILD_DIR/freetype-$FREETYPE_VERSION"
+    fi
     cd "$BUILD_DIR/freetype-$FREETYPE_VERSION"
+    [ ! -f configure ] && with_system_env autoreconf -fi
     ./configure --prefix="$DEPS_DIR" --libdir="$DEPS_DIR/lib" --without-harfbuzz --without-brotli && \
     make -j"$NPROC" && make install && mark_done "freetype"
 }
@@ -632,8 +671,14 @@ build_freetype() {
 build_icu() {
     is_done "icu" && return 0
     log_info "Building ICU $ICU_VERSION (~15-20 min)..."
-    safe_download "https://github.com/unicode-org/icu/releases/download/release-${ICU_VERSION}/icu4c-${ICU_VERSION}-sources.tgz" "icu4c-${ICU_VERSION}-sources.tgz" || return 1
-    cd "$BUILD_DIR"; [ ! -d "icu" ] && with_system_env tar -xzf "icu4c-${ICU_VERSION}-sources.tgz"
+    # ICU uses dashes in the release tag (release-77-1) and underscores in the
+    # tarball filename (icu4c-77_1-sources.tgz) — neither matches the dot-version string.
+    local icu_tag; icu_tag="release-$(echo "$ICU_VERSION" | tr '.' '-')"
+    local icu_file; icu_file="icu4c-$(echo "$ICU_VERSION" | tr '.' '_')-sources.tgz"
+    safe_download \
+        "https://github.com/unicode-org/icu/releases/download/${icu_tag}/${icu_file}" \
+        "$icu_file" || return 1
+    cd "$BUILD_DIR"; [ ! -d "icu" ] && with_system_env tar -xzf "$icu_file"
     cd "$BUILD_DIR/icu/source"
     ./configure --prefix="$DEPS_DIR" --libdir="$DEPS_DIR/lib" && \
     make -j"$NPROC" && make install && mark_done "icu"
@@ -759,20 +804,21 @@ build_all_deps() {
 # ══════════════════════════════════════════════════════════════════════════════
 
 phase1_ensure_install_dir() {
+    local _owner; _owner="$(id -un):$(id -gn)"
     if [ -d "$INSTALL_DIR" ] && [ -w "$INSTALL_DIR" ]; then
         log_info "Installation directory: $INSTALL_DIR"
         return 0
     fi
     if [ -d "$INSTALL_DIR" ] && [ ! -w "$INSTALL_DIR" ]; then
         log_info "Fixing ownership of $INSTALL_DIR..."
-        sudo chown -R "$USER:$USER" "$INSTALL_DIR" || {
+        sudo chown -R "$_owner" "$INSTALL_DIR" || {
             log_error "Cannot chown $INSTALL_DIR"; exit 1
         }
         return 0
     fi
     log_info "Creating $INSTALL_DIR (requires sudo)..."
     if command -v sudo &>/dev/null; then
-        sudo mkdir -p "$INSTALL_DIR" && sudo chown "$USER:$USER" "$INSTALL_DIR" || {
+        sudo mkdir -p "$INSTALL_DIR" && sudo chown "$_owner" "$INSTALL_DIR" || {
             log_error "Failed to create $INSTALL_DIR"; exit 1
         }
     else
@@ -1362,6 +1408,57 @@ phase2_run() {
 # ══════════════════════════════════════════════════════════════════════════════
 
 main() {
+    # ── Non-interactive: CI build mode ────────────────────────────────
+    if [ "$BUILD_ONLY" -eq 1 ]; then
+        log_step "═══ PHASE 1: Build Only (CI mode) ═══"
+        phase1_run
+        echo ""
+        log_info "Build complete. /opt/webstack is ready for packaging."
+        return
+    fi
+
+    # ── Non-interactive: .run installer mode ──────────────────────────
+    if [ "$PHASE2_ONLY" -eq 1 ]; then
+        log_step "═══ PHASE 2: User Setup (pre-compiled release) ═══"
+        phase2_run
+
+        echo ""
+        echo "═══════════════════════════════════════════════════════════"
+        log_info "Installation complete!"
+        echo ""
+        echo "  Compiled stack:  $INSTALL_DIR/"
+        echo "  Your data:       $USER_DIR/"
+        echo "  Your web root:   $USER_WWW/"
+        echo ""
+        echo "  GUI:"
+        echo "    webstack-manager      Open control panel"
+        echo "    (also in your application menu as 'WebStack Manager')"
+        echo ""
+        echo "  CLI:"
+        echo "    webstack-start        Start all services"
+        echo "    webstack-stop         Stop all services"
+        echo "    webstack-php 8.4      Switch PHP version"
+        echo "    webstack-mysql        MariaDB client"
+        echo "    webstack-psql         PostgreSQL client"
+        echo "    webstack-php-cli      PHP CLI (active version)"
+        echo "    webstack-composer     Composer (auto-installs)"
+        echo ""
+        echo "  Credentials:"
+        echo "    MariaDB root:      123456"
+        echo "    MariaDB app user:  webstack / webstack"
+        echo "    PostgreSQL:        postgres / 123456"
+        echo ""
+        echo "  URL: http://localhost:8080"
+        echo ""
+        echo '  echo '\''export PATH="$HOME/.local/bin:$PATH"'\'' >> ~/.bashrc'
+        echo "    source ~/.bashrc"
+        echo ""
+        echo "  To start: webstack-start"
+        echo "═══════════════════════════════════════════════════════════"
+        return
+    fi
+
+    # ── Interactive mode (original behavior, unchanged) ───────────────
     echo ""
     echo "╔══════════════════════════════════════════════════════════╗"
     echo "║     Linux Universal Isolated Web Stack Installer         ║"
@@ -1383,9 +1480,14 @@ main() {
     echo "╚══════════════════════════════════════════════════════════╝"
     echo ""
 
-    read -p "Continue? (y/n) " -n 1 -r
-    echo
-    [[ ! $REPLY =~ ^[Yy]$ ]] && exit 1
+    # Safety: non-interactive / CI environments have no TTY — default to yes
+    if [ -t 0 ]; then
+        read -p "Continue? (y/n) " -n 1 -r
+        echo
+        [[ ! $REPLY =~ ^[Yy]$ ]] && exit 1
+    else
+        echo "[INFO] Non-interactive mode detected — continuing automatically."
+    fi
 
     phase1_run
     phase2_run
@@ -1398,7 +1500,11 @@ main() {
     echo "  Your data:       $USER_DIR/"
     echo "  Your web root:   $USER_WWW/"
     echo ""
-    echo "  Commands:"
+    echo "  GUI:"
+    echo "    webstack-manager      Open control panel"
+    echo "    (also in your application menu as 'WebStack Manager')"
+    echo ""
+    echo "  CLI:"
     echo "    webstack-start        Start all services"
     echo "    webstack-stop         Stop all services"
     echo "    webstack-php 8.4      Switch PHP version"
