@@ -10,14 +10,18 @@ on:
         required: false
         default: 'dev'
 
-permissions: {}
+permissions:
+  contents: read
 
 jobs:
   build:
     runs-on: ubuntu-22.04
     timeout-minutes: 480
     outputs:
-      version: ${{ steps.version.outputs.version }}
+      version:  ${{ steps.version.outputs.version }}
+      filesize: ${{ steps.package.outputs.filesize }}
+      checksum: ${{ steps.package.outputs.checksum }}
+      run_file: ${{ steps.package.outputs.run_file }}
 
     steps:
       - name: Checkout repository
@@ -187,9 +191,10 @@ jobs:
           FILESIZE=$(du -h "$RUN_FILE" | cut -f1)
           CHECKSUM=$(sha256sum "$RUN_FILE" | awk '{print $1}')
 
-          echo "run_file=$RUN_FILE"  >> "$GITHUB_ENV"
-          echo "filesize=$FILESIZE"  >> "$GITHUB_ENV"
-          echo "checksum=$CHECKSUM"  >> "$GITHUB_ENV"
+          # Use GITHUB_OUTPUT (not GITHUB_ENV) so values are available as job outputs
+          echo "run_file=$RUN_FILE"  >> "$GITHUB_OUTPUT"
+          echo "filesize=$FILESIZE"  >> "$GITHUB_OUTPUT"
+          echo "checksum=$CHECKSUM"  >> "$GITHUB_OUTPUT"
 
           echo ""
           echo "=== .run file created ==="
@@ -200,7 +205,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: webstack-installer-${{ steps.version.outputs.version }}
-          path: ${{ env.run_file }}
+          path: ${{ steps.package.outputs.run_file }}
           retention-days: 14
           if-no-files-found: error
 
@@ -208,7 +213,8 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
-    permissions: {}
+    permissions:
+      contents: write
 
     steps:
       - name: Download .run artifact
@@ -223,16 +229,18 @@ jobs:
           VERSION="${{ needs.build.outputs.version }}"
           TAG="${GITHUB_REF_NAME}"
           RUN_FILE="webstack-installer-${VERSION}-linux-x86_64.run"
+          FILESIZE="${{ needs.build.outputs.filesize }}"
+          CHECKSUM="${{ needs.build.outputs.checksum }}"
 
           gh release create "$TAG" "$RUN_FILE" \
             --title "Web Stack Installer v${VERSION}" \
             --notes "## Download
 
-          \`$RUN_FILE\` (${{ env.filesize }})
+          \`$RUN_FILE\` (${{ needs.build.outputs.filesize }})
 
           ### SHA256
           \`\`\`
-          ${{ env.checksum }}
+          ${{ needs.build.outputs.checksum }}
           \`\`\`
 
           ## Quick Install
