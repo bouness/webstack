@@ -10,8 +10,7 @@ on:
         required: false
         default: 'dev'
 
-permissions:
-  contents: write
+permissions: {}
 
 jobs:
   build:
