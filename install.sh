@@ -9,6 +9,15 @@
 
 set -e
 
+BUILD_ONLY=0
+PHASE2_ONLY=0
+for arg in "$@"; do
+    case "$arg" in
+        --build-only)   BUILD_ONLY=1 ;;
+        --phase2-only)  PHASE2_ONLY=1 ;;
+    esac
+done
+
 # ── Colors ───────────────────────────────────────────────────────────────────
 RED='\033[0;31m'
 GREEN='\033[0;32m'
