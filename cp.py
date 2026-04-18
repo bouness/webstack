@@ -39,14 +39,54 @@ if (extension_loaded('intl')) {
 }
 ?>"""
 
+# ── New installer layout ──────────────────────────────────────────────────────
+#   Binaries / shared:  /opt/webstack          (INSTALL_DIR)
+#   Per-user runtime:   ~/.webstack/            (USER_DIR)
+#   Web root:           ~/webstack-www/         (USER_WWW)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def get_install_dir():
+    """Return the shared binary directory (/opt/webstack or override)."""
+    if 'WEBSTACK_HOME' in os.environ:
+        return os.environ['WEBSTACK_HOME']
+    for path in ["/opt/webstack", os.path.expanduser("~/webstack")]:
+        if os.path.exists(path):
+            return path
+    return "/opt/webstack"
+
+def load_paths_file(install_dir):
+    """Parse ~/.webstack/.paths written by the installer."""
+    paths = {
+        "INSTALL_DIR": install_dir,
+        "USER_DIR": os.path.expanduser("~/.webstack"),
+        "USER_WWW": os.path.expanduser("~/webstack-www"),
+    }
+    paths_file = os.path.join(paths["USER_DIR"], ".paths")
+    if os.path.exists(paths_file):
+        with open(paths_file) as f:
+            for line in f:
+                line = line.strip()
+                if "=" in line and not line.startswith("#"):
+                    k, _, v = line.partition("=")
+                    paths[k.strip()] = v.strip().strip('"')
+    return paths
+
 
 class WebStackManager(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.stack_dir = os.path.expanduser("~/webstack")
-        self.deps_dir = os.path.join(self.stack_dir, "deps")
-        self.processes = {}
-        self.settings = QSettings("WebStack", "Manager")
+        # ── Paths (new split layout) ──────────────────────────────────────
+        install_dir = get_install_dir()
+        _p = load_paths_file(install_dir)
+        self.stack_dir  = _p["INSTALL_DIR"]   # /opt/webstack  (binaries)
+        self.user_dir   = _p["USER_DIR"]       # ~/.webstack    (runtime data)
+        self.user_www   = _p["USER_WWW"]       # ~/webstack-www (web root)
+        self.deps_dir   = os.path.join(self.stack_dir, "deps")
+        # ── Legacy alias so old helper methods still work ─────────────────
+        # (methods that previously used self.stack_dir for runtime files
+        #  have been updated to use self.user_dir instead)
+        self.processes  = {}
+        self.settings   = QSettings("WebStack", "Manager")
         self.init_ui()
         self.load_settings()
         
@@ -93,35 +133,28 @@ class WebStackManager(QMainWindow):
         self.monitor_timer.start(2000)  # Update every 2 seconds
         
     def get_environment(self):
-        """Get the proper environment for webstack services by sourcing env.sh"""
+        """Get the proper environment for webstack services"""
         env = os.environ.copy()
-        
-        # Source the env.sh file to get the correct environment
-        env_sh_path = os.path.join(self.stack_dir, "env.sh")
-        if os.path.exists(env_sh_path):
-            try:
-                # Use bash to source the env.sh and print the environment
-                result = subprocess.run(
-                    ['bash', '-c', f'source {env_sh_path} && env'],
-                    capture_output=True, text=True, check=True
-                )
-                
-                # Parse the environment variables from the output
-                for line in result.stdout.splitlines():
-                    if '=' in line:
-                        key, value = line.split('=', 1)
-                        env[key] = value
-                        
-                self.log_message("Environment loaded from env.sh")
-                
-            except subprocess.CalledProcessError as e:
-                self.log_message(f"Error sourcing env.sh: {e}")
-                # Fallback to manual environment setup
-                env = self.get_fallback_environment()
-        else:
-            self.log_message("env.sh not found, using fallback environment")
-            env = self.get_fallback_environment()
-            
+
+        lib_paths = [
+            os.path.join(self.deps_dir, "lib"),
+            os.path.join(self.deps_dir, "lib64"),
+            os.path.join(self.stack_dir, "postgresql", "lib"),
+        ]
+        existing_lib_paths = [p for p in lib_paths if os.path.exists(p)]
+        if existing_lib_paths:
+            env['LD_LIBRARY_PATH'] = ":".join(existing_lib_paths)
+
+        bin_paths = [
+            os.path.join(self.deps_dir, "bin"),
+            os.path.join(self.stack_dir, "bin"),
+            os.path.join(self.user_dir, "bin"),
+        ]
+        existing_bin_paths = [p for p in bin_paths if os.path.exists(p)]
+        if existing_bin_paths:
+            env['PATH'] = ":".join(existing_bin_paths) + ":" + env.get('PATH', '')
+
+        env['WEBSTACK_HOME'] = self.stack_dir
         return env
         
     def get_fallback_environment(self):
@@ -220,8 +253,14 @@ class WebStackManager(QMainWindow):
         info_layout = QFormLayout(info_group)
         
         self.stack_path = QLabel(self.stack_dir)
-        info_layout.addRow("Stack Path:", self.stack_path)
-        
+        info_layout.addRow("Binaries (INSTALL_DIR):", self.stack_path)
+
+        self.user_dir_label = QLabel(self.user_dir)
+        info_layout.addRow("Runtime data (USER_DIR):", self.user_dir_label)
+
+        self.user_www_label = QLabel(self.user_www)
+        info_layout.addRow("Web root (USER_WWW):", self.user_www_label)
+
         self.web_url = QLabel("http://localhost:8080")
         info_layout.addRow("Web URL:", self.web_url)
         
@@ -356,7 +395,8 @@ class WebStackManager(QMainWindow):
         self.load_env_btn.clicked.connect(self.load_environment)
         env_info_layout.addWidget(self.load_env_btn)
         
-        self.source_env_btn = QPushButton("Source env.sh")
+        self.source_env_btn = QPushButton("Show Paths")
+        self.source_env_btn.setToolTip("Display active path configuration from ~/.webstack/.paths")
         self.source_env_btn.clicked.connect(self.source_env_sh)
         env_info_layout.addWidget(self.source_env_btn)
         
@@ -458,7 +498,10 @@ class WebStackManager(QMainWindow):
         config_layout = QFormLayout(config_group)
         
         self.stack_dir_edit = QLabel(self.stack_dir)
-        config_layout.addRow("Stack Directory:", self.stack_dir_edit)
+        config_layout.addRow("Binaries (INSTALL_DIR):", self.stack_dir_edit)
+
+        self.user_dir_edit = QLabel(self.user_dir)
+        config_layout.addRow("Runtime data (USER_DIR):", self.user_dir_edit)
         
         self.nginx_port = QSpinBox()
         self.nginx_port.setRange(1024, 65535)
@@ -558,7 +601,7 @@ class WebStackManager(QMainWindow):
 
     def update_nginx_port(self, port):
         """Update Nginx configuration with new port"""
-        nginx_conf = Path(self.stack_dir) / "nginx" / "conf" / "nginx.conf"
+        nginx_conf = Path(self.user_dir) / "nginx" / "nginx.conf"
         
         if not nginx_conf.exists():
             # Create basic nginx configuration if it doesn't exist
@@ -582,7 +625,7 @@ class WebStackManager(QMainWindow):
 
     def update_mysql_port(self, port):
         """Update MySQL configuration with new port"""
-        mysql_cnf = Path(self.stack_dir) / "mariadb" / "my.cnf"
+        mysql_cnf = Path(self.user_dir) / "mariadb" / "my.cnf"
         
         if not mysql_cnf.exists():
             # Create basic MySQL configuration if it doesn't exist
@@ -607,52 +650,49 @@ class WebStackManager(QMainWindow):
         self.log_message(f"Updated MySQL port to {port}")
 
     def create_nginx_config(self, port=8080):
-        """Create Nginx configuration file"""
-        nginx_conf = Path(self.stack_dir) / "nginx" / "conf" / "nginx.conf"
+        """Create Nginx configuration file in user_dir"""
+        nginx_conf = Path(self.user_dir) / "nginx" / "nginx.conf"
         nginx_conf.parent.mkdir(parents=True, exist_ok=True)
-        
+
         config_content = f'''worker_processes auto;
-error_log logs/error.log;
-pid nginx.pid;
+error_log {self.user_dir}/nginx/logs/error.log;
+pid {self.user_dir}/nginx/nginx.pid;
 
 events {{
     worker_connections 1024;
 }}
 
 http {{
-    include mime.types;
-    default_type application/octet-stream;
-
+    include       {self.stack_dir}/nginx/conf/mime.types;
+    default_type  application/octet-stream;
     sendfile on;
     keepalive_timeout 65;
 
     server {{
         listen {port};
         server_name localhost;
-        root {self.stack_dir}/www;
+        root {self.user_www};
         index index.php index.html index.htm;
 
         location / {{
             try_files $uri $uri/ /index.php?$query_string;
         }}
 
-        location ~ \.php$ {{
-            fastcgi_pass unix:{self.stack_dir}/php/current/php-fpm.sock;
+        location ~ \\.php$ {{
+            fastcgi_pass unix:{self.user_dir}/php/current/php-fpm.sock;
             fastcgi_index index.php;
             fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
-            include fastcgi_params;
+            include {self.stack_dir}/nginx/conf/fastcgi_params;
         }}
 
-        location ~ /\.ht {{
+        location ~ /\\.ht {{
             deny all;
         }}
     }}
 }}
 '''
-        
         with open(nginx_conf, 'w') as f:
             f.write(config_content)
-        
         self.log_message(f"Created Nginx configuration with port {port}")
         
     def create_log_tab(self):
@@ -753,263 +793,163 @@ http {{
             self.activateWindow()
 
     def source_env_sh(self):
-        """Force source the env.sh file"""
-        env_sh_path = os.path.join(self.stack_dir, "env.sh")
-        if os.path.exists(env_sh_path):
-            try:
-                # Read and display env.sh content
-                with open(env_sh_path, 'r') as f:
-                    env_content = f.read()
-                
-                self.diag_output.append("=== env.sh content ===")
-                self.diag_output.append(env_content)
-                self.diag_output.append("======================")
-                
-                # Source the environment
-                env = self.get_environment()
-                self.lib_path_display.setPlainText(f"LD_LIBRARY_PATH:\n{env.get('LD_LIBRARY_PATH', 'Not set')}\n\nPATH:\n{env.get('PATH', 'Not set')}")
-                self.env_status.setText("Environment: Sourced from env.sh")
-                self.env_status.setStyleSheet("color: green; font-weight: bold;")
-                
-                self.log_message("env.sh sourced successfully")
-                QMessageBox.information(self, "env.sh", "Environment sourced from env.sh successfully!")
-                
-            except Exception as e:
-                self.log_message(f"Error reading env.sh: {e}")
-                QMessageBox.critical(self, "env.sh", f"Error reading env.sh: {e}")
+        """Display current path configuration (env.sh is not used in the new installer)"""
+        env = self.get_environment()
+        paths_file = Path(self.user_dir) / ".paths"
+        info = []
+        if paths_file.exists():
+            with open(paths_file) as f:
+                info.append("=== ~/.webstack/.paths ===")
+                info.append(f.read())
         else:
-            QMessageBox.warning(self, "env.sh", "env.sh file not found!")
+            info.append("~/.webstack/.paths not found (run installer Phase 2)")
+        info.append("=== Active environment ===")
+        info.append(f"LD_LIBRARY_PATH:\n{env.get('LD_LIBRARY_PATH', 'Not set')}")
+        info.append(f"\nPATH prefix:\n{env.get('PATH', 'Not set').split(':')[0]}")
+        self.diag_output.append('\n'.join(info))
+        self.lib_path_display.setPlainText(
+            f"LD_LIBRARY_PATH:\n{env.get('LD_LIBRARY_PATH', 'Not set')}\n\n"
+            f"PATH prefix:\n{env.get('PATH', 'Not set').split(':')[0]}")
+        self.env_status.setText("Environment: Loaded")
+        self.env_status.setStyleSheet("color: green; font-weight: bold;")
 
     def load_environment(self):
         """Load and display the webstack environment"""
         env = self.get_environment()
         lib_path = env.get('LD_LIBRARY_PATH', 'Not set')
-        path = env.get('PATH', 'Not set')
-        
-        self.lib_path_display.setPlainText(f"LD_LIBRARY_PATH:\n{lib_path}\n\nPATH:\n{path}")
+        path_prefix = env.get('PATH', 'Not set').split(':')[0]
+        self.lib_path_display.setPlainText(
+            f"INSTALL_DIR: {self.stack_dir}\n"
+            f"USER_DIR:    {self.user_dir}\n"
+            f"USER_WWW:    {self.user_www}\n\n"
+            f"LD_LIBRARY_PATH:\n{lib_path}\n\n"
+            f"PATH prefix:\n{path_prefix}")
         self.env_status.setText("Environment: Loaded")
         self.env_status.setStyleSheet("color: green; font-weight: bold;")
-        
         self.log_message("WebStack environment loaded")
-        
         return env
 
     def check_libraries(self):
         """Check for required libraries"""
         self.diag_output.append("\n=== Library Check ===")
-        
         env = self.get_environment()
-        
-        # Check MariaDB libraries
+
+        # MariaDB binary
         mariadb_binary = Path(self.stack_dir) / "mariadb" / "bin" / "mariadbd"
         if mariadb_binary.exists():
-            result = subprocess.run([
-                "ldd", str(mariadb_binary)
-            ], capture_output=True, text=True, env=env)
-            
+            result = subprocess.run(["ldd", str(mariadb_binary)],
+                                    capture_output=True, text=True, env=env)
             if "not found" in result.stdout:
                 self.diag_output.append("❌ MariaDB has missing libraries:")
                 for line in result.stdout.split('\n'):
                     if "not found" in line:
                         self.diag_output.append(f"  {line.strip()}")
             else:
-                self.diag_output.append("✓ MariaDB libraries are available")
+                self.diag_output.append("✓ MariaDB libraries OK")
         else:
             self.diag_output.append("❌ MariaDB binary not found")
-            
-        # Check for ICU library specifically - IMPROVED SEARCH
+
+        # ICU search
         self.diag_output.append("\n=== ICU Library Search ===")
-        
-        # Look for any ICU libraries in deps directory
-        icu_patterns = [
-            "libicudata*",
-            "libicuuc*", 
-            "libicui18n*",
-            "libicuio*",
-            "libicutu*",
-            "libicutest*"
-        ]
-        
+        icu_patterns = ["libicudata*", "libicuuc*", "libicui18n*"]
         found_icu_libs = []
         for pattern in icu_patterns:
-            result = subprocess.run([
-                "find", self.deps_dir, "-name", pattern, "-type", "f"
-            ], capture_output=True, text=True)
-            
-            if result.stdout.strip():
-                libs_found = result.stdout.strip().split('\n')
-                found_icu_libs.extend(libs_found)
-                for lib in libs_found:
-                    lib_name = Path(lib).name
-                    self.diag_output.append(f"✓ Found: {lib_name}")
-        
+            r = subprocess.run(["find", self.deps_dir, "-name", pattern, "-type", "f"],
+                               capture_output=True, text=True)
+            if r.stdout.strip():
+                found_icu_libs.extend(r.stdout.strip().split('\n'))
         if found_icu_libs:
-            self.diag_output.append(f"✓ Total ICU libraries found: {len(found_icu_libs)}")
-            
-            # Check which specific ICU versions are available
-            icu_versions = set()
-            for lib_path in found_icu_libs:
-                lib_name = Path(lib_path).name
-                # Extract version from library name (e.g., libicudata.so.76.1)
-                if '.so.' in lib_name:
-                    version_part = lib_name.split('.so.')[1]
-                    # Get major version (e.g., 76 from 76.1)
-                    major_version = version_part.split('.')[0]
-                    icu_versions.add(major_version)
-            
-            if icu_versions:
-                self.diag_output.append(f"✓ ICU versions available: {', '.join(sorted(icu_versions))}")
+            self.diag_output.append(f"✓ {len(found_icu_libs)} ICU library files found")
+            for lib in sorted(found_icu_libs):
+                self.diag_output.append(f"  {Path(lib).name}")
         else:
-            self.diag_output.append("❌ No ICU libraries found in deps directory")
-            
-            # Show what's actually in the lib directory
-            lib_dir = Path(self.deps_dir) / "lib"
-            if lib_dir.exists():
-                self.diag_output.append("\n=== Contents of lib directory ===")
-                so_files = list(lib_dir.glob("*.so*"))
-                for so_file in sorted(so_files):
-                    self.diag_output.append(f"  {so_file.name}")
-        
-        # Check if PHP can find ICU libraries
-        php_binary = Path(self.stack_dir) / "php" / "current" / "bin" / "php"
-        if php_binary.exists():
-            self.diag_output.append("\n=== PHP ICU Check ===")
-            
-            # Test if PHP has ICU support
-            result = subprocess.run([str(php_binary), "-m"], capture_output=True, text=True, env=env)
-            if "intl" in result.stdout:
-                self.diag_output.append("✓ PHP intl extension loaded (requires ICU)")
-            else:
-                self.diag_output.append("❌ PHP intl extension not loaded")
-                
-            # Check PHP configuration for ICU
-            result = subprocess.run([str(php_binary), "-i"], capture_output=True, text=True, env=env)
-            if "ICU" in result.stdout:
-                self.diag_output.append("✓ PHP ICU support detected")
-            else:
-                self.diag_output.append("❌ PHP ICU support not detected")
-                
-            # Check if PHP can find libraries at runtime
-            result = subprocess.run([
-                "ldd", str(php_binary)
-            ], capture_output=True, text=True, env=env)
-            
-            if "not found" in result.stdout:
-                self.diag_output.append("❌ PHP has missing libraries:")
-                for line in result.stdout.split('\n'):
-                    if "not found" in line and "icu" in line.lower():
-                        self.diag_output.append(f"  {line.strip()}")
-            else:
-                self.diag_output.append("✓ PHP libraries are available")
-                
+            self.diag_output.append("❌ No ICU libraries found in deps")
+
+        # PHP binary check
+        current_link = Path(self.user_dir) / "php" / "current"
+        if current_link.is_symlink():
+            try:
+                ver = current_link.resolve().name
+                php_binary = Path(self.stack_dir) / "php" / ver / "bin" / "php"
+                if php_binary.exists():
+                    self.diag_output.append("\n=== PHP Library Check ===")
+                    r = subprocess.run(["ldd", str(php_binary)],
+                                       capture_output=True, text=True, env=env)
+                    if "not found" in r.stdout:
+                        self.diag_output.append("❌ PHP has missing libraries:")
+                        for line in r.stdout.split('\n'):
+                            if "not found" in line:
+                                self.diag_output.append(f"  {line.strip()}")
+                    else:
+                        self.diag_output.append("✓ PHP libraries OK")
+            except Exception:
+                pass
+
         self.diag_output.append("=== Library Check Complete ===")
 
     def fix_mysql_socket(self):
-        """Fix MySQL socket configuration - UPDATED with port setting"""
+        """Fix MariaDB socket/config — user_dir holds runtime data, stack_dir is basedir"""
         try:
-            mysql_dir = Path(self.stack_dir) / "mariadb"
-            my_cnf = mysql_dir / "my.cnf"
-            
-            # Get current port setting or use default
-            current_port = getattr(self, 'mysql_port', 3306)
+            mysql_user_dir = Path(self.user_dir)  / "mariadb"
+            mysql_base_dir = Path(self.stack_dir) / "mariadb"
+            my_cnf         = mysql_user_dir / "my.cnf"
+
+            current_port = 3306
             if hasattr(self, 'mysql_port'):
                 current_port = self.mysql_port.value()
-            
-            # Create comprehensive my.cnf that FORCES the correct socket and port
-            my_cnf_content = f"""[client]
-port={current_port}
-socket={mysql_dir}/mariadb.sock
 
-[mysqld]
-basedir={mysql_dir}
-datadir={mysql_dir}/data
-port={current_port}
-socket={mysql_dir}/mariadb.sock
-pid-file={mysql_dir}/mariadb.pid
-log-error={mysql_dir}/logs/error.log
-tmpdir={mysql_dir}/tmp
+            my_cnf_content = f"""[mysqld]
+basedir = {mysql_base_dir}
+datadir = {mysql_user_dir}/data
+port = {current_port}
+socket = {mysql_user_dir}/mariadb.sock
+pid-file = {mysql_user_dir}/mariadb.pid
+log-error = {mysql_user_dir}/logs/error.log
+bind-address = 127.0.0.1
+skip-name-resolve
+innodb_buffer_pool_size = 64M
+innodb_log_file_size = 48M
 
-# Security - prevent using system socket
-skip-networking
-bind-address=127.0.0.1
-
-# Performance
-innodb_buffer_pool_size=16M
-innodb_log_file_size=48M
-
-# Explicitly disable system socket usage
-loose-skip-symbolic-links=1
-
-[mariadb]
-socket={mysql_dir}/mariadb.sock
-
-[mariadbd]
-socket={mysql_dir}/mariadb.sock
-
-[mysql]
-socket={mysql_dir}/mariadb.sock
-
-[mysqladmin]
-socket={mysql_dir}/mariadb.sock
-
-[mysqldump]
-socket={mysql_dir}/mariadb.sock
-
-[mysqlimport]
-socket={mysql_dir}/mariadb.sock
-
-[mysqlshow]
-socket={mysql_dir}/mariadb.sock
-
-[mysqlcheck]
-socket={mysql_dir}/mariadb.sock
+[client]
+port = {current_port}
+socket = {mysql_user_dir}/mariadb.sock
 """
+            for d in [mysql_user_dir / "logs", mysql_user_dir / "data"]:
+                d.mkdir(parents=True, exist_ok=True)
+
             with open(my_cnf, 'w') as f:
                 f.write(my_cnf_content)
-            
-            self.log_message("Created comprehensive MySQL configuration file")
-            
-            # Ensure required directories exist
-            required_dirs = [
-                mysql_dir / "logs",
-                mysql_dir / "tmp", 
-                mysql_dir / "data"
-            ]
-            
-            for dir_path in required_dirs:
-                dir_path.mkdir(parents=True, exist_ok=True)
-            
-            QMessageBox.information(self, "Fix MySQL Socket", 
-                                "MySQL socket configuration completely fixed!")
-            
+            os.chmod(my_cnf, 0o600)
+
+            self.log_message("MariaDB configuration fixed")
+            QMessageBox.information(self, "Fix MariaDB Config",
+                "MariaDB configuration fixed successfully!")
         except Exception as e:
-            self.log_message(f"Error fixing MySQL socket: {e}")
-            QMessageBox.critical(self, "Fix MySQL Socket", f"Failed to fix MySQL socket: {e}")
+            self.log_message(f"Error fixing MariaDB config: {e}")
+            QMessageBox.critical(self, "Fix MariaDB Config",
+                f"Failed to fix config: {e}")
 
     def check_icu_via_php(self):
         """Check ICU functionality via PHP"""
         import tempfile
-
         try:
             env = self.get_environment()
-            php_binary = Path(self.stack_dir) / "php" / "current" / "bin" / "php"
-
+            current_link = Path(self.user_dir) / "php" / "current"
+            if not current_link.is_symlink():
+                return "PHP current symlink not found"
+            ver = current_link.resolve().name
+            php_binary = Path(self.stack_dir) / "php" / ver / "bin" / "php"
             if not php_binary.exists():
-                return "PHP binary not found"
-
-            # Create and execute temp file
+                return f"PHP binary not found: {php_binary}"
             with tempfile.NamedTemporaryFile(mode='w', suffix='.php', delete=False) as f:
                 f.write(PHP_ICU_TEST_SCRIPT)
                 temp_path = f.name
-
             try:
                 result = subprocess.run([str(php_binary), temp_path],
-                                    capture_output=True, text=True, env=env)
+                                        capture_output=True, text=True, env=env)
                 return result.stdout
             finally:
-                # Always clean up the temp file
                 Path(temp_path).unlink(missing_ok=True)
-
         except Exception as e:
             return f"Error testing ICU: {e}"
 
@@ -1017,217 +957,206 @@ socket={mysql_dir}/mariadb.sock
         """Run comprehensive diagnostics"""
         self.diag_output.clear()
         self.diag_output.append("=== WebStack Diagnostics ===\n")
-        
-        # Check stack directory
-        stack_path = Path(self.stack_dir)
-        if not stack_path.exists():
-            self.diag_output.append("❌ Stack directory does not exist!")
+
+        # ── Directories ──────────────────────────────────────────────────
+        self.diag_output.append(f"INSTALL_DIR : {self.stack_dir}")
+        self.diag_output.append(f"USER_DIR    : {self.user_dir}")
+        self.diag_output.append(f"USER_WWW    : {self.user_www}\n")
+
+        if not Path(self.stack_dir).exists():
+            self.diag_output.append("❌ INSTALL_DIR does not exist!")
             return
-            
-        self.diag_output.append("✓ Stack directory exists")
-        
-        # Check env.sh
-        env_sh = stack_path / "env.sh"
-        if env_sh.exists():
-            self.diag_output.append("✓ env.sh found")
-            with open(env_sh, 'r') as f:
-                env_content = f.read()
-                if "LD_LIBRARY_PATH" in env_content:
-                    self.diag_output.append("✓ env.sh contains LD_LIBRARY_PATH")
-                else:
-                    self.diag_output.append("❌ env.sh missing LD_LIBRARY_PATH")
+        self.diag_output.append("✓ INSTALL_DIR exists")
+
+        if Path(self.user_dir).exists():
+            self.diag_output.append("✓ USER_DIR exists")
         else:
-            self.diag_output.append("❌ env.sh not found")
-        
-        # Check components
+            self.diag_output.append("❌ USER_DIR missing — run installer Phase 2")
+
+        if Path(self.user_www).exists():
+            self.diag_output.append("✓ USER_WWW exists")
+        else:
+            self.diag_output.append("❌ USER_WWW missing — run installer Phase 2")
+
+        # ── Binaries (stack_dir) ────────────────────────────────────────
+        self.diag_output.append("\n=== Binaries (INSTALL_DIR) ===")
         components = {
-            "Nginx": stack_path / "nginx" / "nginx",
-            "MariaDB safe": stack_path / "mariadb" / "bin" / "mariadbd-safe",
-            "MariaDB daemon": stack_path / "mariadb" / "bin" / "mariadbd",
-            "PHP": stack_path / "php",
-            "PostgreSQL pg_ctl": stack_path / "postgresql" / "bin" / "pg_ctl",
-            "PostgreSQL data": stack_path / "postgresql" / "data"
+            "Nginx binary"       : Path(self.stack_dir) / "nginx" / "nginx",
+            "nginx/conf/mime.types"    : Path(self.stack_dir) / "nginx" / "conf" / "mime.types",
+            "nginx/conf/fastcgi_params": Path(self.stack_dir) / "nginx" / "conf" / "fastcgi_params",
+            "MariaDB safe"       : Path(self.stack_dir) / "mariadb" / "bin" / "mariadbd-safe",
+            "MariaDB daemon"     : Path(self.stack_dir) / "mariadb" / "bin" / "mariadbd",
+            "PostgreSQL pg_ctl"  : Path(self.stack_dir) / "postgresql" / "bin" / "pg_ctl",
         }
-        
         for name, path in components.items():
-            if path.exists():
-                self.diag_output.append(f"✓ {name} found at {path}")
-            else:
-                self.diag_output.append(f"❌ {name} not found at {path}")
-        
-        # Check MySQL configuration
-        mysql_cnf = stack_path / "mariadb" / "my.cnf"
-        if mysql_cnf.exists():
-            with open(mysql_cnf, 'r') as f:
-                mysql_config = f.read()
-            if '/tmp/mysql.sock' in mysql_config:
-                self.diag_output.append("❌ MySQL configured to use system socket (/tmp/mysql.sock)")
-            else:
-                self.diag_output.append("✓ MySQL using isolated socket")
-                
-            # Check if socket path is correctly set
-            mysql_socket_path = stack_path / "mariadb" / "mariadb.sock"
-            if str(mysql_socket_path) in mysql_config:
-                self.diag_output.append("✓ MySQL socket path correctly configured")
-            else:
-                self.diag_output.append("❌ MySQL socket path not properly configured")
+            mark = "✓" if path.exists() else "❌"
+            self.diag_output.append(f"{mark} {name}: {path}")
+
+        # ── PHP binaries ────────────────────────────────────────────────
+        self.diag_output.append("\n=== PHP Binaries (INSTALL_DIR) ===")
+        php_bin_dir = Path(self.stack_dir) / "php"
+        if php_bin_dir.exists():
+            for item in sorted(php_bin_dir.iterdir()):
+                if item.is_dir() and item.name.replace('.', '').isdigit() and len(item.name) <= 4:
+                    php_ok  = (item / "bin" / "php").exists()
+                    fpm_ok  = (item / "sbin" / "php-fpm").exists()
+                    self.diag_output.append(
+                        f"{'✓' if php_ok else '❌'} PHP {item.name} binary  "
+                        f"{'✓' if fpm_ok else '❌'} FPM")
         else:
-            self.diag_output.append("❌ MySQL configuration file missing")
-        
-        # Check PHP installations - ONLY show actual installed versions
-        self.diag_output.append("\n=== PHP Installations ===")
-        php_dir = stack_path / "php"
-        if php_dir.exists():
-            # Only check directories that actually exist
-            for item in php_dir.iterdir():
-                if item.is_dir():
-                    # Check if this looks like a PHP version directory (8.4, 8.3, etc.)
-                    if item.name.replace('.', '').isdigit() and len(item.name) <= 4:
-                        php_binary = item / "bin" / "php"
-                        php_fpm = item / "sbin" / "php-fpm"
-                        
-                        if php_binary.exists():
-                            self.diag_output.append(f"✓ PHP {item.name} binary found")
-                        else:
-                            self.diag_output.append(f"❌ PHP {item.name} binary missing")
-                            
-                        if php_fpm.exists():
-                            self.diag_output.append(f"✓ PHP {item.name} FPM found")
-                        else:
-                            self.diag_output.append(f"❌ PHP {item.name} FPM missing")
-                    else:
-                        # Skip non-version directories or full version numbers that don't exist
-                        continue
-        else:
-            self.diag_output.append("❌ PHP directory not found")
-        
-        # Check current PHP symlink
-        current_php = stack_path / "php" / "current"
-        if current_php.exists():
-            if current_php.is_symlink():
-                try:
-                    target = current_php.resolve()
-                    self.diag_output.append(f"✓ Current PHP symlink points to: {target.name}")
-                except:
-                    self.diag_output.append("❌ Current PHP symlink is broken")
+            self.diag_output.append("❌ PHP directory not found in INSTALL_DIR")
+
+        # ── Runtime config (user_dir) ───────────────────────────────────
+        self.diag_output.append("\n=== Runtime Config (USER_DIR) ===")
+        nginx_conf   = Path(self.user_dir) / "nginx" / "nginx.conf"
+        mariadb_cnf  = Path(self.user_dir) / "mariadb" / "my.cnf"
+        pg_data      = Path(self.user_dir) / "postgresql" / "data"
+
+        self.diag_output.append(
+            f"{'✓' if nginx_conf.exists() else '❌'} nginx/nginx.conf")
+        self.diag_output.append(
+            f"{'✓' if mariadb_cnf.exists() else '❌'} mariadb/my.cnf")
+        self.diag_output.append(
+            f"{'✓' if (pg_data / 'PG_VERSION').exists() else '❌'} postgresql/data (initialised)")
+
+        # ── MariaDB config sanity ───────────────────────────────────────
+        if mariadb_cnf.exists():
+            with open(mariadb_cnf) as f:
+                mc = f.read()
+            if '/tmp/mysql.sock' in mc:
+                self.diag_output.append("❌ MariaDB still using system socket /tmp/mysql.sock")
             else:
-                self.diag_output.append("❌ Current PHP is not a symlink")
-        else:
-            self.diag_output.append("❌ Current PHP symlink does not exist")
-            
-        # Check dependencies directory
-        deps_dir = stack_path / "deps"
-        if deps_dir.exists():
-            self.diag_output.append(f"✓ Dependencies directory exists: {deps_dir}")
-            lib_dir = deps_dir / "lib"
-            if lib_dir.exists():
-                self.diag_output.append(f"✓ Library directory exists: {lib_dir}")
-                # Count .so files
-                so_files = list(lib_dir.glob("*.so*"))
-                self.diag_output.append(f"✓ Found {len(so_files)} library files")
-                
-                # Show ICU libraries specifically
-                icu_files = list(lib_dir.glob("libicu*"))
-                if icu_files:
-                    self.diag_output.append(f"✓ Found {len(icu_files)} ICU library files:")
-                    for icu_file in sorted(icu_files):
-                        self.diag_output.append(f"  - {icu_file.name}")
+                self.diag_output.append("✓ MariaDB using isolated socket")
+
+        # ── PHP current symlink ─────────────────────────────────────────
+        self.diag_output.append("\n=== PHP Current Symlink (USER_DIR) ===")
+        current_php = Path(self.user_dir) / "php" / "current"
+        if current_php.is_symlink():
+            try:
+                target = current_php.resolve()
+                self.diag_output.append(f"✓ current → {target.name}")
+                log_dir = Path(self.user_dir) / "php" / target.name / "logs"
+                if log_dir.exists():
+                    self.diag_output.append(f"✓ log dir exists: {log_dir}")
                 else:
-                    self.diag_output.append("❌ No ICU libraries found in lib directory")
-            else:
-                self.diag_output.append(f"❌ Library directory missing: {lib_dir}")
+                    self.diag_output.append(f"❌ log dir missing (will be auto-created on start): {log_dir}")
+                fpm_conf = Path(self.user_dir) / "php" / target.name / "php-fpm.conf"
+                if fpm_conf.exists():
+                    self.diag_output.append(f"✓ php-fpm.conf exists")
+                else:
+                    self.diag_output.append(f"❌ php-fpm.conf missing: {fpm_conf}")
+            except Exception:
+                self.diag_output.append("❌ current symlink is broken")
+        elif current_php.exists():
+            self.diag_output.append("❌ current is not a symlink")
         else:
-            self.diag_output.append(f"❌ Dependencies directory missing: {deps_dir}")
-            
-        # Test ICU functionality via PHP
-        self.diag_output.append("\n=== ICU Functionality Test ===")
-        icu_test_result = self.check_icu_via_php()
-        self.diag_output.append(icu_test_result)
-            
+            self.diag_output.append("❌ current symlink does not exist")
+
+        # ── Dependencies ────────────────────────────────────────────────
+        self.diag_output.append("\n=== Dependencies ===")
+        deps_lib = Path(self.deps_dir) / "lib"
+        if deps_lib.exists():
+            so_count = len(list(deps_lib.glob("*.so*")))
+            self.diag_output.append(f"✓ deps/lib exists ({so_count} .so files)")
+            icu_files = sorted(deps_lib.glob("libicu*"))
+            if icu_files:
+                self.diag_output.append(f"✓ ICU libraries: {', '.join(f.name for f in icu_files[:4])}")
+            else:
+                self.diag_output.append("❌ No ICU libraries found")
+        else:
+            self.diag_output.append("❌ deps/lib missing")
+
+        # ── ICU via PHP ─────────────────────────────────────────────────
+        self.diag_output.append("\n=== ICU via PHP ===")
+        self.diag_output.append(self.check_icu_via_php())
+
         self.diag_output.append("\n=== Diagnostics Complete ===")
 
     def auto_repair(self):
         """Attempt to automatically repair common issues"""
         self.diag_output.append("\n=== Auto-Repair ===")
-        
+
         # Fix PHP symlinks
         self.fix_php_symlinks()
-        
-        # Fix MySQL socket
+
+        # Fix MariaDB config
         self.fix_mysql_socket()
-        
-        # Create missing directories
+
+        # Ensure required runtime directories exist in user_dir
         required_dirs = [
-            Path(self.stack_dir) / "nginx" / "logs",
-            Path(self.stack_dir) / "mariadb" / "logs",
-            Path(self.stack_dir) / "mariadb" / "tmp",
-            Path(self.stack_dir) / "mariadb" / "data",
-            Path(self.stack_dir) / "www"
+            Path(self.user_dir) / "nginx" / "logs",
+            Path(self.user_dir) / "mariadb" / "logs",
+            Path(self.user_dir) / "mariadb" / "data",
+            Path(self.user_dir) / "postgresql" / "logs",
+            Path(self.user_www),
         ]
-        
+        # PHP log dirs for all installed versions
+        php_bin_dir = Path(self.stack_dir) / "php"
+        if php_bin_dir.exists():
+            for item in php_bin_dir.iterdir():
+                if item.is_dir() and item.name.replace('.', '').isdigit():
+                    required_dirs.append(
+                        Path(self.user_dir) / "php" / item.name / "logs")
+
         for dir_path in required_dirs:
             if not dir_path.exists():
                 dir_path.mkdir(parents=True, exist_ok=True)
                 self.diag_output.append(f"✓ Created directory: {dir_path}")
-        
-        # Initialize MySQL database if needed
-        mysql_data_dir = Path(self.stack_dir) / "mariadb" / "data"
-        if not any(mysql_data_dir.iterdir()):
-            self.diag_output.append("Initializing MySQL database...")
+
+        # Initialise MariaDB database if data dir is empty
+        mysql_data_dir = Path(self.user_dir) / "mariadb" / "data"
+        if mysql_data_dir.exists() and not any(mysql_data_dir.iterdir()):
+            self.diag_output.append("Initialising MariaDB database...")
             self.initialize_mysql_database()
-        
+
         self.diag_output.append("✓ Auto-repair completed")
 
     def initialize_mysql_database(self):
-        """Initialize MySQL database if it doesn't exist"""
+        """Initialize MariaDB database if it doesn't exist"""
         try:
             mysql_install_db = Path(self.stack_dir) / "mariadb" / "scripts" / "mariadb-install-db"
             if not mysql_install_db.exists():
-                self.log_message("MySQL install script not found")
+                self.log_message("MariaDB install script not found")
                 return
-                
             env = self.get_environment()
-            mysql_dir = Path(self.stack_dir) / "mariadb"
-            
             result = subprocess.run([
                 str(mysql_install_db),
-                "--basedir=" + str(mysql_dir),
-                "--datadir=" + str(mysql_dir / "data"),
-                "--user=" + os.environ.get('USER', 'demo')
+                f"--basedir={Path(self.stack_dir) / 'mariadb'}",
+                f"--datadir={Path(self.user_dir) / 'mariadb' / 'data'}",
+                f"--user={os.environ.get('USER', os.environ.get('LOGNAME', 'demo'))}",
             ], capture_output=True, text=True, env=env)
-            
             if result.returncode == 0:
-                self.log_message("MySQL database initialized successfully")
+                self.log_message("MariaDB database initialised successfully")
             else:
-                self.log_message(f"MySQL database initialization failed: {result.stderr}")
-                
+                self.log_message(
+                    f"MariaDB database initialisation failed: {result.stderr}")
         except Exception as e:
-            self.log_message(f"Error initializing MySQL database: {e}")
+            self.log_message(f"Error initialising MariaDB database: {e}")
 
     def fix_php_symlinks(self):
-        """Fix PHP version symlinks - FIXED to only use actual versions"""
-        php_dir = Path(self.stack_dir) / "php"
-        current_link = php_dir / "current"
-        
-        if not php_dir.exists():
-            QMessageBox.warning(self, "Fix Symlinks", "PHP directory not found!")
+        """Fix PHP version symlinks — user_dir symlink, stack_dir binaries"""
+        # Binaries are in stack_dir; user_dir holds the current symlink
+        php_bin_dir  = Path(self.stack_dir) / "php"
+        php_user_dir = Path(self.user_dir)  / "php"
+        current_link = php_user_dir / "current"
+
+        if not php_bin_dir.exists():
+            QMessageBox.warning(self, "Fix Symlinks",
+                "PHP binary directory not found in INSTALL_DIR!")
             return
-            
-        # Find available PHP versions - only actual installed versions
+
         php_versions = []
-        for item in php_dir.iterdir():
-            if item.is_dir():
-                # Only consider directories that look like PHP versions (8.4, 8.3, etc.)
-                if item.name.replace('.', '').isdigit() and len(item.name) <= 4:
-                    php_binary = item / "bin" / "php"
-                    if php_binary.exists():
-                        php_versions.append(item.name)
-        
+        for item in sorted(php_bin_dir.iterdir()):
+            if item.is_dir() and item.name.replace('.', '').isdigit() and len(item.name) <= 4:
+                if (item / "bin" / "php").exists():
+                    php_versions.append(item.name)
+
         if not php_versions:
-            QMessageBox.warning(self, "Fix Symlinks", "No valid PHP installations found!")
+            QMessageBox.warning(self, "Fix Symlinks",
+                "No valid PHP installations found in INSTALL_DIR!")
             return
-            
-        # Remove broken symlink if it exists
+
+        # Remove broken symlink
         if current_link.exists() or current_link.is_symlink():
             try:
                 if current_link.is_symlink():
@@ -1236,85 +1165,101 @@ socket={mysql_dir}/mariadb.sock
                     shutil.rmtree(current_link)
             except Exception as e:
                 self.log_message(f"Error removing old symlink: {e}")
-        
-        # Create new symlink to first available version
+
+        # Create new symlink  (points to user_dir/php/<ver>)
         try:
             target_version = php_versions[0]
-            current_link.symlink_to(php_dir / target_version)
+            php_user_dir.mkdir(parents=True, exist_ok=True)
+            current_link.symlink_to(php_user_dir / target_version)
             self.log_message(f"Fixed PHP symlink to version {target_version}")
-            QMessageBox.information(self, "Fix Symlinks", f"PHP symlink fixed to version {target_version}")
+            QMessageBox.information(self, "Fix Symlinks",
+                f"PHP symlink fixed to version {target_version}")
         except Exception as e:
             self.log_message(f"Error creating symlink: {e}")
-            QMessageBox.critical(self, "Fix Symlinks", f"Failed to create symlink: {e}")
+            QMessageBox.critical(self, "Fix Symlinks",
+                f"Failed to create symlink: {e}")
 
     def test_nginx_config(self):
         """Test Nginx configuration"""
         try:
             env = self.get_environment()
             nginx_binary = Path(self.stack_dir) / "nginx" / "nginx"
+            nginx_conf   = Path(self.user_dir)  / "nginx" / "nginx.conf"
             if not nginx_binary.exists():
                 QMessageBox.warning(self, "Test Nginx", "Nginx binary not found!")
                 return
-                
-            result = subprocess.run([str(nginx_binary), "-t"], 
-                                  capture_output=True, text=True, 
-                                  cwd=str(Path(self.stack_dir) / "nginx"),
-                                  env=env)
-            
+            if not nginx_conf.exists():
+                QMessageBox.warning(self, "Test Nginx",
+                    f"Nginx config not found: {nginx_conf}")
+                return
+            result = subprocess.run(
+                [str(nginx_binary), "-t", "-c", str(nginx_conf)],
+                capture_output=True, text=True, env=env)
             if result.returncode == 0:
-                QMessageBox.information(self, "Test Nginx", "Nginx configuration test passed!")
+                QMessageBox.information(self, "Test Nginx",
+                    "Nginx configuration test passed!")
             else:
-                QMessageBox.critical(self, "Test Nginx", f"Nginx configuration test failed:\n{result.stderr}")
-                
+                QMessageBox.critical(self, "Test Nginx",
+                    f"Nginx configuration test failed:\n{result.stderr}")
         except Exception as e:
-            QMessageBox.critical(self, "Test Nginx", f"Error testing Nginx: {e}")
+            QMessageBox.critical(self, "Test Nginx",
+                f"Error testing Nginx: {e}")
 
     def test_php(self):
         """Test PHP installation"""
         try:
             env = self.get_environment()
-            current_php = Path(self.stack_dir) / "php" / "current" / "bin" / "php"
-            if not current_php.exists():
-                QMessageBox.warning(self, "Test PHP", "PHP binary not found!")
+            # Resolve active version from user_dir symlink, binary from stack_dir
+            current_link = Path(self.user_dir) / "php" / "current"
+            if not current_link.exists():
+                QMessageBox.warning(self, "Test PHP",
+                    "PHP 'current' symlink not found in USER_DIR!")
                 return
-                
-            result = subprocess.run([str(current_php), "-v"], 
-                                  capture_output=True, text=True, env=env)
-            
+            ver = current_link.resolve().name
+            current_php = Path(self.stack_dir) / "php" / ver / "bin" / "php"
+            if not current_php.exists():
+                QMessageBox.warning(self, "Test PHP",
+                    f"PHP binary not found: {current_php}")
+                return
+            result = subprocess.run([str(current_php), "-v"],
+                                    capture_output=True, text=True, env=env)
             if result.returncode == 0:
                 version_line = result.stdout.split('\n')[0]
-                QMessageBox.information(self, "Test PHP", f"PHP test passed!\n{version_line}")
+                QMessageBox.information(self, "Test PHP",
+                    f"PHP test passed!\n{version_line}")
             else:
-                QMessageBox.critical(self, "Test PHP", f"PHP test failed:\n{result.stderr}")
-                
+                QMessageBox.critical(self, "Test PHP",
+                    f"PHP test failed:\n{result.stderr}")
         except Exception as e:
-            QMessageBox.critical(self, "Test PHP", f"Error testing PHP: {e}")
+            QMessageBox.critical(self, "Test PHP",
+                f"Error testing PHP: {e}")
 
     def test_mysql(self):
-        """Test MySQL installation"""
+        """Test MariaDB connection"""
         try:
             env = self.get_environment()
-            mysql_admin = Path(self.stack_dir) / "mariadb" / "bin" / "mariadb-admin"
+            mysql_admin  = Path(self.stack_dir) / "mariadb" / "bin" / "mariadb-admin"
+            mysql_cnf    = Path(self.user_dir)  / "mariadb" / "my.cnf"
+            mysql_socket = Path(self.user_dir)  / "mariadb" / "mariadb.sock"
             if not mysql_admin.exists():
-                QMessageBox.warning(self, "Test MySQL", "MySQL admin binary not found!")
+                QMessageBox.warning(self, "Test MariaDB",
+                    "MariaDB admin binary not found!")
                 return
-                
-            # Use the correct socket path directly
-            mysql_socket = Path(self.stack_dir) / "mariadb" / "mariadb.sock"
-            
-            # Test using the socket path directly (no space after =)
-            result = subprocess.run([str(mysql_admin), 
-                                f"--socket={mysql_socket}", 
-                                "ping"], 
-                                capture_output=True, text=True, env=env)
-            
+            result = subprocess.run(
+                [str(mysql_admin),
+                 f"--defaults-file={mysql_cnf}",
+                 f"--socket={mysql_socket}",
+                 "ping"],
+                capture_output=True, text=True, env=env)
             if result.returncode == 0:
-                QMessageBox.information(self, "Test MySQL", "MySQL test passed! Server is reachable.")
+                QMessageBox.information(self, "Test MariaDB",
+                    "MariaDB test passed! Server is reachable.")
             else:
-                QMessageBox.critical(self, "Test MySQL", f"MySQL test failed:\n{result.stderr}")
-                
+                QMessageBox.critical(self, "Test MariaDB",
+                    f"MariaDB test failed:\n{result.stderr}")
         except Exception as e:
-            QMessageBox.critical(self, "Test MySQL", f"Error testing MySQL: {e}")
+            QMessageBox.critical(self, "Test MariaDB",
+                f"Error testing MariaDB: {e}")
 
     def load_settings(self):
         """Load application settings"""
@@ -1383,51 +1328,49 @@ socket={mysql_dir}/mariadb.sock
             QMessageBox.information(self, "Settings", "Settings reset to defaults!")
             
     def populate_php_versions(self):
-        """Populate PHP version combo box - FIXED to only show actual versions"""
+        """Populate PHP version combo box from installed versions in stack_dir"""
         self.php_version_combo.clear()
         php_dir = Path(self.stack_dir) / "php"
-        
         if php_dir.exists():
-            # Only add directories that are actual PHP installations
-            for item in php_dir.iterdir():
-                if item.is_dir():
-                    # Check if this looks like a PHP version directory (8.4, 8.3, etc.)
-                    if item.name.replace('.', '').isdigit() and len(item.name) <= 4:
-                        php_binary = item / "bin" / "php"
-                        if php_binary.exists():  # Only add if PHP binary exists
-                            self.php_version_combo.addItem(item.name)
-        
-        # If no versions found but current symlink exists, try to use it
+            for item in sorted(php_dir.iterdir()):
+                if item.is_dir() and item.name.replace('.', '').isdigit() and len(item.name) <= 4:
+                    if (item / "bin" / "php").exists():
+                        self.php_version_combo.addItem(item.name)
+        # Fallback: read from user_dir current symlink
         if self.php_version_combo.count() == 0:
-            current_link = php_dir / "current"
+            current_link = Path(self.user_dir) / "php" / "current"
             if current_link.exists() and current_link.is_symlink():
                 try:
-                    target = current_link.resolve().name
-                    self.php_version_combo.addItem(target)
-                except:
+                    self.php_version_combo.addItem(current_link.resolve().name)
+                except Exception:
                     pass
+        # Set combo to currently active version
+        current_link = Path(self.user_dir) / "php" / "current"
+        if current_link.exists() and current_link.is_symlink():
+            try:
+                active = current_link.resolve().name
+                idx = self.php_version_combo.findText(active)
+                if idx >= 0:
+                    self.php_version_combo.blockSignals(True)
+                    self.php_version_combo.setCurrentIndex(idx)
+                    self.php_version_combo.blockSignals(False)
+            except Exception:
+                pass
 
     def check_mysql_status(self):
-        """Check if MySQL is running by testing the socket"""
-        mysql_socket = Path(self.stack_dir) / "mariadb" / "mariadb.sock"
-        
+        """Check if MariaDB is running by testing the socket"""
+        mysql_socket = Path(self.user_dir) / "mariadb" / "mariadb.sock"
         if not mysql_socket.exists():
             return False
-            
         try:
             env = self.get_environment()
             mysql_admin = Path(self.stack_dir) / "mariadb" / "bin" / "mariadb-admin"
-            
             if not mysql_admin.exists():
                 return False
-                
-            result = subprocess.run([str(mysql_admin), 
-                                f"--socket={mysql_socket}", 
-                                "ping"], 
-                                capture_output=True, text=True, env=env)
-            
+            result = subprocess.run(
+                [str(mysql_admin), f"--socket={mysql_socket}", "ping"],
+                capture_output=True, text=True, env=env)
             return result.returncode == 0
-            
         except Exception:
             return False
 
@@ -1435,18 +1378,18 @@ socket={mysql_dir}/mariadb.sock
         """Update service status indicators"""
         # Check stack health
         self.check_stack_health()
-        
-        # Check Nginx
-        nginx_pid_file = Path(self.stack_dir) / "nginx" / "nginx.pid"
+
+        # Check Nginx  (PID written to ~/.webstack/nginx/nginx.pid)
+        nginx_pid_file = Path(self.user_dir) / "nginx" / "nginx.pid"
         if nginx_pid_file.exists():
             self.nginx_status.setText("Running")
             self.nginx_status.setStyleSheet("color: green; font-weight: bold;")
         else:
             self.nginx_status.setText("Stopped")
             self.nginx_status.setStyleSheet("color: red; font-weight: bold;")
-            
-        # Check PHP-FPM
-        php_current_link = Path(self.stack_dir) / "php" / "current"
+
+        # Check PHP-FPM  (symlink ~/.webstack/php/current → ~/.webstack/php/8.x)
+        php_current_link = Path(self.user_dir) / "php" / "current"
         if php_current_link.exists():
             php_pid_file = php_current_link / "php-fpm.pid"
             if php_pid_file.exists():
@@ -1455,27 +1398,25 @@ socket={mysql_dir}/mariadb.sock
             else:
                 self.php_status.setText("Stopped")
                 self.php_status.setStyleSheet("color: red; font-weight: bold;")
-                
-            # Update PHP version
             try:
                 php_version = php_current_link.resolve().name
                 self.php_version.setText(php_version)
-            except:
+            except Exception:
                 self.php_version.setText("Broken symlink")
         else:
             self.php_status.setText("Not installed")
             self.php_status.setStyleSheet("color: orange; font-weight: bold;")
             self.php_version.setText("Unknown")
-            
-        # Check MariaDB using socket test
+
+        # Check MariaDB  (socket at ~/.webstack/mariadb/mariadb.sock)
         if self.check_mysql_status():
             self.mysql_status.setText("Running")
             self.mysql_status.setStyleSheet("color: green; font-weight: bold;")
         else:
             self.mysql_status.setText("Stopped")
             self.mysql_status.setStyleSheet("color: red; font-weight: bold;")
-            
-        # Check PostgreSQL via postmaster.pid
+
+        # Check PostgreSQL  (PID at ~/.webstack/postgresql/data/postmaster.pid)
         if self.check_postgresql_status():
             self.pgsql_status.setText("Running")
             self.pgsql_status.setStyleSheet("color: green; font-weight: bold;")
@@ -1486,24 +1427,25 @@ socket={mysql_dir}/mariadb.sock
     def check_stack_health(self):
         """Check overall stack health"""
         issues = []
-        
-        # Check if stack directory exists
+
         if not Path(self.stack_dir).exists():
-            self.stack_health.setText("Missing")
+            self.stack_health.setText("Missing (INSTALL_DIR)")
             self.stack_health.setStyleSheet("color: red; font-weight: bold;")
             return
-            
-        # Check components
+
+        if not Path(self.user_dir).exists():
+            self.stack_health.setText("Missing (USER_DIR — run installer Phase 2)")
+            self.stack_health.setStyleSheet("color: red; font-weight: bold;")
+            return
+
+        # Binaries live in stack_dir
         if not (Path(self.stack_dir) / "nginx" / "nginx").exists():
-            issues.append("Nginx missing")
-            
+            issues.append("Nginx binary missing")
         if not (Path(self.stack_dir) / "mariadb" / "bin" / "mariadbd-safe").exists():
-            issues.append("MariaDB missing")
-            
+            issues.append("MariaDB binary missing")
         if not (Path(self.stack_dir) / "postgresql" / "bin" / "postgres").exists():
-            issues.append("PostgreSQL missing")
-            
-        # Check PHP
+            issues.append("PostgreSQL binary missing")
+
         php_dir = Path(self.stack_dir) / "php"
         php_installed = False
         if php_dir.exists():
@@ -1512,14 +1454,18 @@ socket={mysql_dir}/mariadb.sock
                     if (item / "bin" / "php").exists():
                         php_installed = True
                         break
-                        
         if not php_installed:
-            issues.append("PHP missing")
-            
-        # Check dependencies
+            issues.append("PHP binary missing")
+
         if not (Path(self.stack_dir) / "deps" / "lib").exists():
             issues.append("Libraries missing")
-            
+
+        # Runtime data lives in user_dir
+        if not (Path(self.user_dir) / "nginx" / "nginx.conf").exists():
+            issues.append("Nginx config missing (run installer Phase 2)")
+        if not (Path(self.user_dir) / "mariadb" / "my.cnf").exists():
+            issues.append("MariaDB config missing (run installer Phase 2)")
+
         if issues:
             self.stack_health.setText(f"Issues: {', '.join(issues)}")
             self.stack_health.setStyleSheet("color: orange; font-weight: bold;")
@@ -1531,131 +1477,149 @@ socket={mysql_dir}/mariadb.sock
         """Start a specific service"""
         try:
             env = self.get_environment()
-            
+
             if service == "nginx":
                 nginx_binary = Path(self.stack_dir) / "nginx" / "nginx"
+                nginx_conf   = Path(self.user_dir)  / "nginx" / "nginx.conf"
                 if not nginx_binary.exists():
                     QMessageBox.warning(self, "Start Nginx", "Nginx binary not found!")
                     return
-                subprocess.Popen([str(nginx_binary)], 
-                            cwd=str(Path(self.stack_dir) / "nginx"),
-                            env=env)
-                
+                if not nginx_conf.exists():
+                    QMessageBox.warning(self, "Start Nginx",
+                        f"Nginx config not found at {nginx_conf}\n"
+                        "Re-run the installer to complete Phase 2.")
+                    return
+                subprocess.Popen([str(nginx_binary), "-c", str(nginx_conf)], env=env)
+
             elif service == "php":
-                php_current = Path(self.stack_dir) / "php" / "current"
-                php_fpm = php_current / "sbin" / "php-fpm"
-                
-                if not php_current.exists():
-                    QMessageBox.warning(self, "Start PHP", "PHP 'current' symlink not found! Use 'Fix Symlinks' button.")
+                # Binaries in stack_dir; FPM config/PID/socket in user_dir
+                php_user_current  = Path(self.user_dir)  / "php" / "current"
+                php_inst_current  = Path(self.stack_dir) / "php" / "current"
+                if not php_user_current.exists():
+                    QMessageBox.warning(self, "Start PHP",
+                        "PHP 'current' symlink not found in USER_DIR!\n"
+                        "Use 'Fix Symlinks' or re-run the installer.")
                     return
-                    
-                if not php_fpm.exists():
-                    QMessageBox.warning(self, "Start PHP", f"PHP-FPM binary not found at {php_fpm}")
+                # Resolve the version (e.g. "8.5") from the user_dir symlink
+                try:
+                    ver = php_user_current.resolve().name
+                except Exception:
+                    QMessageBox.warning(self, "Start PHP", "PHP current symlink is broken.")
                     return
-                    
-                subprocess.Popen([str(php_fpm), 
-                                "-y", str(php_current / "etc" / "php-fpm.conf")],
-                                env=env)
-                
+                php_fpm_bin  = Path(self.stack_dir) / "php" / ver / "sbin" / "php-fpm"
+                php_fpm_conf = Path(self.user_dir)  / "php" / ver / "php-fpm.conf"
+                if not php_fpm_bin.exists():
+                    QMessageBox.warning(self, "Start PHP",
+                        f"PHP-FPM binary not found: {php_fpm_bin}")
+                    return
+                if not php_fpm_conf.exists():
+                    QMessageBox.warning(self, "Start PHP",
+                        f"PHP-FPM config not found: {php_fpm_conf}\n"
+                        "Re-run the installer to complete Phase 2.")
+                    return
+                # Ensure log dir exists (fixes the broken brace-expansion bug)
+                log_dir = Path(self.user_dir) / "php" / ver / "logs"
+                log_dir.mkdir(parents=True, exist_ok=True)
+                subprocess.Popen([str(php_fpm_bin), "-y", str(php_fpm_conf)], env=env)
+
             elif service == "postgresql":
-                pg_bin = Path(self.stack_dir) / "postgresql" / "bin"
-                pg_ctl = pg_bin / "pg_ctl"
-                pgdata = Path(self.stack_dir) / "postgresql" / "data"
-                pglog = Path(self.stack_dir) / "postgresql" / "logs" / "postgresql.log"
-                
+                pg_ctl  = Path(self.stack_dir) / "postgresql" / "bin" / "pg_ctl"
+                pgdata  = Path(self.user_dir)  / "postgresql" / "data"
+                pglog   = Path(self.user_dir)  / "postgresql" / "logs" / "postgresql.log"
                 if not pg_ctl.exists():
-                    QMessageBox.warning(self, "Start PostgreSQL", "PostgreSQL pg_ctl not found!")
+                    QMessageBox.warning(self, "Start PostgreSQL",
+                        "PostgreSQL pg_ctl not found!")
                     return
                 if not pgdata.exists() or not (pgdata / "PG_VERSION").exists():
                     QMessageBox.warning(self, "Start PostgreSQL",
-                        "PostgreSQL data directory not initialized.\n"
-                        "Re-run the installer to run configure_postgresql.")
+                        "PostgreSQL data directory not initialised.\n"
+                        "Re-run the installer to complete Phase 2.")
                     return
-                    
                 pglog.parent.mkdir(parents=True, exist_ok=True)
-                subprocess.Popen([str(pg_ctl), "-D", str(pgdata),
-                                  "-l", str(pglog), "start"], env=env)
-                
+                subprocess.Popen(
+                    [str(pg_ctl), "-D", str(pgdata), "-l", str(pglog), "start"],
+                    env=env)
+
             elif service == "mysql":
                 mysql_safe = Path(self.stack_dir) / "mariadb" / "bin" / "mariadbd-safe"
+                mysql_cnf  = Path(self.user_dir)  / "mariadb" / "my.cnf"
                 if not mysql_safe.exists():
-                    QMessageBox.warning(self, "Start MySQL", "MariaDB binary not found!")
+                    QMessageBox.warning(self, "Start MariaDB",
+                        "MariaDB mariadbd-safe binary not found!")
                     return
-                    
-                mysql_cnf = Path(self.stack_dir) / "mariadb" / "my.cnf"
-                mysql_socket = Path(self.stack_dir) / "mariadb" / "mariadb.sock"
-                
-                # Ensure socket directory exists
-                mysql_socket.parent.mkdir(parents=True, exist_ok=True)
-                
-                # Start with proper environment and log output
-                startup_log = Path(self.stack_dir) / "mariadb" / "logs" / "startup.log"
+                if not mysql_cnf.exists():
+                    QMessageBox.warning(self, "Start MariaDB",
+                        f"MariaDB config not found: {mysql_cnf}\n"
+                        "Re-run the installer to complete Phase 2.")
+                    return
+                startup_log = Path(self.user_dir) / "mariadb" / "logs" / "startup.log"
+                startup_log.parent.mkdir(parents=True, exist_ok=True)
                 with open(startup_log, "w") as log_file:
-                    process = subprocess.Popen([str(mysql_safe),
-                                            f"--socket={mysql_socket}",
-                                            f"--pid-file={Path(self.stack_dir) / 'mariadb' / 'mariadb.pid'}",
-                                            f"--datadir={Path(self.stack_dir) / 'mariadb' / 'data'}"],
-                                            env=env, stdout=log_file, stderr=log_file)
-                
+                    subprocess.Popen(
+                        [str(mysql_safe), f"--defaults-file={mysql_cnf}"],
+                        env=env, stdout=log_file, stderr=log_file)
+
             self.log_message(f"Started {service} service")
-            
+
         except Exception as e:
             self.log_message(f"Error starting {service}: {str(e)}")
-            QMessageBox.critical(self, f"Start {service}", f"Failed to start {service}: {str(e)}")
+            QMessageBox.critical(self, f"Start {service}",
+                f"Failed to start {service}: {str(e)}")
 
     def stop_service(self, service):
         """Stop a specific service"""
         try:
             env = self.get_environment()
-            
+
             if service == "nginx":
-                nginx_pid_file = Path(self.stack_dir) / "nginx" / "nginx.pid"
+                nginx_pid_file = Path(self.user_dir) / "nginx" / "nginx.pid"
                 if nginx_pid_file.exists():
-                    with open(nginx_pid_file, 'r') as f:
+                    with open(nginx_pid_file) as f:
                         pid = int(f.read().strip())
                     os.kill(pid, signal.SIGTERM)
-                    
+
             elif service == "php":
-                php_pid_file = Path(self.stack_dir) / "php" / "current" / "php-fpm.pid"
+                php_pid_file = Path(self.user_dir) / "php" / "current" / "php-fpm.pid"
                 if php_pid_file.exists():
-                    with open(php_pid_file, 'r') as f:
+                    with open(php_pid_file) as f:
                         pid = int(f.read().strip())
                     os.kill(pid, signal.SIGTERM)
-                    
+
             elif service == "postgresql":
-                pg_ctl = Path(self.stack_dir) / "postgresql" / "bin" / "pg_ctl"
-                pgdata = Path(self.stack_dir) / "postgresql" / "data"
+                pg_ctl  = Path(self.stack_dir) / "postgresql" / "bin" / "pg_ctl"
+                pgdata  = Path(self.user_dir)  / "postgresql" / "data"
                 if pg_ctl.exists() and pgdata.exists():
                     subprocess.run([str(pg_ctl), "-D", str(pgdata), "stop"],
                                    capture_output=True, text=True, env=env)
-                    
+
             elif service == "mysql":
-                mysql_admin = Path(self.stack_dir) / "mariadb" / "bin" / "mariadb-admin"
-                mysql_socket = Path(self.stack_dir) / "mariadb" / "mariadb.sock"
-                
+                mysql_admin  = Path(self.stack_dir) / "mariadb" / "bin" / "mariadb-admin"
+                mysql_cnf    = Path(self.user_dir)  / "mariadb" / "my.cnf"
+                mysql_socket = Path(self.user_dir)  / "mariadb" / "mariadb.sock"
                 if mysql_admin.exists():
-                    # Try graceful shutdown using socket directly
-                    result = subprocess.run([str(mysql_admin),
-                                        f"--socket={mysql_socket}",
-                                        "shutdown"], 
-                                        capture_output=True, text=True, env=env)
-                    
+                    result = subprocess.run(
+                        [str(mysql_admin),
+                         f"--defaults-file={mysql_cnf}",
+                         f"--socket={mysql_socket}",
+                         "shutdown"],
+                        capture_output=True, text=True, env=env)
                     if result.returncode != 0:
-                        self.log_message(f"Graceful shutdown failed, trying force kill: {result.stderr}")
-                        # If graceful shutdown fails, try to kill the process
-                        mysql_pid_file = Path(self.stack_dir) / "mariadb" / "mariadb.pid"
+                        self.log_message(
+                            f"Graceful MariaDB shutdown failed: {result.stderr}")
+                        mysql_pid_file = Path(self.user_dir) / "mariadb" / "mariadb.pid"
                         if mysql_pid_file.exists():
-                            with open(mysql_pid_file, 'r') as f:
+                            with open(mysql_pid_file) as f:
                                 pid = int(f.read().strip())
                             os.kill(pid, signal.SIGTERM)
                 else:
-                    self.log_message("MySQL admin not found, cannot stop gracefully")
-                
+                    self.log_message("MariaDB admin binary not found")
+
             self.log_message(f"Stopped {service} service")
-            
+
         except Exception as e:
             self.log_message(f"Error stopping {service}: {str(e)}")
-            QMessageBox.critical(self, f"Stop {service}", f"Failed to stop {service}: {str(e)}")
+            QMessageBox.critical(self, f"Stop {service}",
+                f"Failed to stop {service}: {str(e)}")
 
     def restart_service(self, service):
         """Restart a specific service"""
@@ -1699,42 +1663,33 @@ socket={mysql_dir}/mariadb.sock
         """Switch PHP version"""
         if not version:
             return
-            
         try:
-            # Stop current PHP
             self.stop_service("php")
-            
-            # Update symlink
-            current_link = Path(self.stack_dir) / "php" / "current"
-            if current_link.exists():
+            # The symlink lives in user_dir; the target dir also in user_dir
+            current_link = Path(self.user_dir) / "php" / "current"
+            if current_link.exists() or current_link.is_symlink():
                 current_link.unlink()
-            current_link.symlink_to(Path(self.stack_dir) / "php" / version)
-            
-            # Start new PHP
+            current_link.symlink_to(Path(self.user_dir) / "php" / version)
             QTimer.singleShot(1000, lambda: self.start_service("php"))
-            
             self.log_message(f"Switched to PHP {version}")
-            
         except Exception as e:
             self.log_message(f"Error switching PHP version: {str(e)}")
-            QMessageBox.critical(self, "PHP Switch", f"Failed to switch PHP version: {str(e)}")
+            QMessageBox.critical(self, "PHP Switch",
+                f"Failed to switch PHP version: {str(e)}")
             
     def clean_logs(self):
         """Clean log files"""
         try:
             log_dirs = [
-                Path(self.stack_dir) / "nginx" / "logs",
-                Path(self.stack_dir) / "mariadb" / "logs",
-                Path(self.stack_dir) / "postgresql" / "logs"
+                Path(self.user_dir) / "nginx" / "logs",
+                Path(self.user_dir) / "mariadb" / "logs",
+                Path(self.user_dir) / "postgresql" / "logs",
             ]
-            
-            # Add PHP log directories
-            php_dir = Path(self.stack_dir) / "php"
-            if php_dir.exists():
-                for version_dir in php_dir.iterdir():
-                    if version_dir.is_dir():
+            php_user_dir = Path(self.user_dir) / "php"
+            if php_user_dir.exists():
+                for version_dir in php_user_dir.iterdir():
+                    if version_dir.is_dir() and version_dir.name != "current":
                         log_dirs.append(version_dir / "logs")
-            
             cleaned_files = 0
             for log_dir in log_dirs:
                 if log_dir.exists():
@@ -1742,13 +1697,13 @@ socket={mysql_dir}/mariadb.sock
                         if log_file.stat().st_size > 0:
                             log_file.unlink()
                             cleaned_files += 1
-                            
             self.log_message(f"Cleaned {cleaned_files} log files")
-            QMessageBox.information(self, "Clean Logs", f"Cleaned {cleaned_files} log files")
-            
+            QMessageBox.information(self, "Clean Logs",
+                f"Cleaned {cleaned_files} log files")
         except Exception as e:
             self.log_message(f"Error cleaning logs: {str(e)}")
-            QMessageBox.critical(self, "Clean Logs", f"Failed to clean logs: {str(e)}")
+            QMessageBox.critical(self, "Clean Logs",
+                f"Failed to clean logs: {str(e)}")
             
     def clean_build_files(self):
         """Clean build files to free up space"""
@@ -1786,10 +1741,9 @@ socket={mysql_dir}/mariadb.sock
         """Clean temporary files"""
         try:
             temp_dirs = [
-                Path(self.stack_dir) / "tmp",
-                Path(self.stack_dir) / "mariadb" / "tmp"
+                Path(self.user_dir) / "tmp",
+                Path(self.user_dir) / "mariadb" / "tmp",
             ]
-            
             cleaned_files = 0
             for temp_dir in temp_dirs:
                 if temp_dir.exists():
@@ -1797,9 +1751,7 @@ socket={mysql_dir}/mariadb.sock
                         if temp_file.is_file():
                             temp_file.unlink()
                             cleaned_files += 1
-                            
             self.log_message(f"Cleaned {cleaned_files} temporary files")
-            
         except Exception as e:
             self.log_message(f"Error cleaning temp files: {str(e)}")
             
@@ -1825,15 +1777,19 @@ socket={mysql_dir}/mariadb.sock
         
         try:
             if log_type == "nginx":
-                log_file = Path(self.stack_dir) / "nginx" / "logs" / "error.log"
+                log_file = Path(self.user_dir) / "nginx" / "logs" / "error.log"
             elif log_type == "php":
-                log_file = Path(self.stack_dir) / "php" / "current" / "logs" / "php-fpm.log"
+                current_link = Path(self.user_dir) / "php" / "current"
+                if current_link.is_symlink():
+                    ver = current_link.resolve().name
+                    log_file = Path(self.user_dir) / "php" / ver / "logs" / "php-fpm.log"
+                else:
+                    log_file = Path(self.user_dir) / "php" / "current" / "logs" / "php-fpm.log"
             elif log_type == "mysql":
-                log_file = Path(self.stack_dir) / "mariadb" / "logs" / "error.log"
+                log_file = Path(self.user_dir) / "mariadb" / "logs" / "error.log"
             elif log_type == "postgresql":
-                log_file = Path(self.stack_dir) / "postgresql" / "logs" / "postgresql.log"
+                log_file = Path(self.user_dir) / "postgresql" / "logs" / "postgresql.log"
             else:  # system
-                # Show application log
                 self.log_view.setPlainText(self.get_application_log())
                 return
                 
@@ -1857,13 +1813,18 @@ socket={mysql_dir}/mariadb.sock
         
         try:
             if log_type == "nginx":
-                log_file = Path(self.stack_dir) / "nginx" / "logs" / "error.log"
+                log_file = Path(self.user_dir) / "nginx" / "logs" / "error.log"
             elif log_type == "php":
-                log_file = Path(self.stack_dir) / "php" / "current" / "logs" / "php-fpm.log"
+                current_link = Path(self.user_dir) / "php" / "current"
+                if current_link.is_symlink():
+                    ver = current_link.resolve().name
+                    log_file = Path(self.user_dir) / "php" / ver / "logs" / "php-fpm.log"
+                else:
+                    log_file = Path(self.user_dir) / "php" / "current" / "logs" / "php-fpm.log"
             elif log_type == "mysql":
-                log_file = Path(self.stack_dir) / "mariadb" / "logs" / "error.log"
+                log_file = Path(self.user_dir) / "mariadb" / "logs" / "error.log"
             elif log_type == "postgresql":
-                log_file = Path(self.stack_dir) / "postgresql" / "logs" / "postgresql.log"
+                log_file = Path(self.user_dir) / "postgresql" / "logs" / "postgresql.log"
             else:
                 return
                 
@@ -1890,23 +1851,24 @@ socket={mysql_dir}/mariadb.sock
         """Add message to application log"""
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         log_entry = f"[{timestamp}] {message}\n"
-        
-        # Write to application log file
-        log_file = Path(self.stack_dir) / "webstack_manager.log"
-        with open(log_file, 'a') as f:
-            f.write(log_entry)
-            
+        log_file = Path(self.user_dir) / "webstack_manager.log"
+        try:
+            with open(log_file, 'a') as f:
+                f.write(log_entry)
+        except Exception:
+            pass  # Don't crash if log dir isn't ready yet
+
     def get_application_log(self):
         """Get application log content"""
-        log_file = Path(self.stack_dir) / "webstack_manager.log"
+        log_file = Path(self.user_dir) / "webstack_manager.log"
         if log_file.exists():
-            with open(log_file, 'r') as f:
+            with open(log_file) as f:
                 return f.read()
         return "No application log entries yet."
         
     def check_postgresql_status(self):
         """Check if PostgreSQL is running via postmaster.pid"""
-        pgdata = Path(self.stack_dir) / "postgresql" / "data"
+        pgdata = Path(self.user_dir) / "postgresql" / "data"
         pid_file = pgdata / "postmaster.pid"
         if not pid_file.exists():
             return False
@@ -1923,18 +1885,18 @@ socket={mysql_dir}/mariadb.sock
         """Test PostgreSQL connection"""
         try:
             env = self.get_environment()
-            psql = Path(self.stack_dir) / "postgresql" / "bin" / "psql"
+            psql   = Path(self.stack_dir) / "postgresql" / "bin" / "psql"
+            pgdata = Path(self.user_dir)  / "postgresql" / "data"
             if not psql.exists():
                 QMessageBox.warning(self, "Test PostgreSQL", "psql binary not found!")
                 return
-                
             result = subprocess.run(
-                [str(psql), "-U", "postgres", "-c", "SELECT version();"],
-                capture_output=True, text=True, env=env, timeout=5
-            )
-            
+                [str(psql), "-U", "postgres",
+                 "-h", "127.0.0.1", "-c", "SELECT version();"],
+                capture_output=True, text=True, env=env, timeout=5)
             if result.returncode == 0:
-                version_line = result.stdout.strip().split("\n")[2].strip() if result.stdout else ""
+                version_line = (result.stdout.strip().split("\n")[2].strip()
+                                if result.stdout else "")
                 QMessageBox.information(self, "Test PostgreSQL",
                     f"PostgreSQL test passed!\n\n{version_line}")
             else:
@@ -1942,14 +1904,15 @@ socket={mysql_dir}/mariadb.sock
                     f"PostgreSQL test failed:\n{result.stderr.strip()}")
         except subprocess.TimeoutExpired:
             QMessageBox.critical(self, "Test PostgreSQL",
-                "Connection timed out - is PostgreSQL running?")
+                "Connection timed out — is PostgreSQL running?")
         except Exception as e:
-            QMessageBox.critical(self, "Test PostgreSQL", f"Error testing PostgreSQL: {e}")
+            QMessageBox.critical(self, "Test PostgreSQL",
+                f"Error testing PostgreSQL: {e}")
 
     def update_postgresql_port(self, port):
         """Update PostgreSQL port in postgresql.conf"""
-        pgdata = Path(self.stack_dir) / "postgresql" / "data"
-        pg_conf = pgdata / "postgresql.conf"
+        pgdata   = Path(self.user_dir) / "postgresql" / "data"
+        pg_conf  = pgdata / "postgresql.conf"
         
         if not pg_conf.exists():
             self.log_message("postgresql.conf not found - PostgreSQL may not be initialized")
@@ -2004,6 +1967,16 @@ def main():
     app.setApplicationName("WebStack Manager")
     app.setApplicationVersion("1.0.0")
     app.setQuitOnLastWindowClosed(False)
+
+    # Check if running as root (warn but don't prevent)
+    if os.geteuid() == 0:
+        msg = QMessageBox()
+        msg.setIcon(QMessageBox.Warning)
+        msg.setWindowTitle("Running as Root")
+        msg.setText("WebStack Manager is running as root.")
+        msg.setInformativeText("It's recommended to run as a normal user. Some features may have limited functionality.")
+        msg.setStandardButtons(QMessageBox.Ok)
+        msg.exec_()
     
     # Create and show main window
     style = app.style()
@@ -2017,15 +1990,15 @@ def main():
     if not start_minimized:
         window.show()
     
-    # Auto-load environment if configured
-    auto_load_env = settings.value("auto_load_env", True, type=bool)
-    if auto_load_env:
-        window.load_environment()
+    # # Auto-load environment if configured
+    # auto_load_env = settings.value("auto_load_env", True, type=bool)
+    # if auto_load_env:
+    #     window.load_environment()
     
-    # Start services if auto-start is enabled
-    auto_start = settings.value("auto_start", False, type=bool)
-    if auto_start:
-        QTimer.singleShot(1000, window.start_all_services)
+    # # Start services if auto-start is enabled
+    # auto_start = settings.value("auto_start", False, type=bool)
+    # if auto_start:
+    #     QTimer.singleShot(1000, window.start_all_services)
     
     return app.exec()
 
