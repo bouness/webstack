@@ -671,20 +671,14 @@ build_libjpeg() {
 build_freetype() {
     is_done "freetype" && return 0
     log_info "Building freetype $FREETYPE_VERSION..."
-    # GitHub tag uses dashes: VER-2-14-3
-    local ft_tag; ft_tag="VER-$(echo "$FREETYPE_VERSION" | tr '.' '-')"
-    safe_download "https://github.com/freetype/freetype/archive/refs/tags/${ft_tag}.tar.gz" "freetype-$FREETYPE_VERSION.tar.gz" || \
     safe_download "https://download.savannah.gnu.org/releases/freetype/freetype-$FREETYPE_VERSION.tar.gz" "freetype-$FREETYPE_VERSION.tar.gz" || return 1
-    cd "$BUILD_DIR"
-    if [ ! -d "freetype-$FREETYPE_VERSION" ]; then
-        with_system_env tar -xzf "freetype-$FREETYPE_VERSION.tar.gz"
-        # GitHub archive extracts as freetype-VER-2-14-3 — rename to expected dir
-        local extracted_dir; extracted_dir=$(find "$BUILD_DIR" -maxdepth 1 -type d -name "freetype-*" | head -1)
-        [ -n "$extracted_dir" ] && [ "$extracted_dir" != "$BUILD_DIR/freetype-$FREETYPE_VERSION" ] && \
-            mv "$extracted_dir" "$BUILD_DIR/freetype-$FREETYPE_VERSION"
-    fi
+    cd "$BUILD_DIR"; [ ! -d "freetype-$FREETYPE_VERSION" ] && with_system_env tar -xzf "freetype-$FREETYPE_VERSION.tar.gz"
     cd "$BUILD_DIR/freetype-$FREETYPE_VERSION"
-    [ ! -f configure ] && with_system_env autoreconf -fi
+
+    # FreeType's makefile runs 'git submodule update' for dlg — fake the check
+    mkdir -p subprojects/dlg
+    touch subprojects/dlg/.git
+
     ./configure --prefix="$DEPS_DIR" --libdir="$DEPS_DIR/lib" --without-harfbuzz --without-brotli && \
     make -j"$NPROC" && make install && mark_done "freetype"
 }
