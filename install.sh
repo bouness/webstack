@@ -241,9 +241,9 @@ safe_download() {
     [ -f "$BUILD_DIR/$filename" ] && return 0
     cd "$BUILD_DIR"
     log_info "Downloading $filename..."
-    with_system_env wget -q --show-progress "$url" || \
+    with_system_env wget -q --show-progress -O "$filename" "$url" || \
     with_system_env curl -L -o "$filename" "$url" || \
-    with_system_env /usr/bin/wget -q --show-progress "$url" || \
+    with_system_env /usr/bin/wget -q --show-progress -O "$filename" "$url" || \
     with_system_env /usr/bin/curl -L -o "$filename" "$url" || {
         log_error "Failed to download $filename"
         log_warn "Place it manually in: $DOWNLOAD_DIR"
@@ -256,7 +256,7 @@ safe_download() {
 download_extract() {
     local url=$1 filename; filename=$(basename "$url"); local extract_dir=$2
     cd "$BUILD_DIR"
-    [ ! -f "$filename" ] && with_system_env wget -q --show-progress "$url"
+    [ ! -f "$filename" ] && with_system_env wget -q --show-progress -O "$filename" "$url"
     [ ! -d "$extract_dir" ] && with_system_env tar xf "$filename"
 }
 
