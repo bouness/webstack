@@ -674,11 +674,6 @@ build_freetype() {
     safe_download "https://download.savannah.gnu.org/releases/freetype/freetype-$FREETYPE_VERSION.tar.gz" "freetype-$FREETYPE_VERSION.tar.gz" || return 1
     cd "$BUILD_DIR"; [ ! -d "freetype-$FREETYPE_VERSION" ] && with_system_env tar -xzf "freetype-$FREETYPE_VERSION.tar.gz"
     cd "$BUILD_DIR/freetype-$FREETYPE_VERSION"
-
-    # FreeType's makefile runs 'git submodule update' for dlg — fake the check
-    mkdir -p subprojects/dlg
-    touch subprojects/dlg/.git
-
     ./configure --prefix="$DEPS_DIR" --libdir="$DEPS_DIR/lib" --without-harfbuzz --without-brotli && \
     make -j"$NPROC" && make install && mark_done "freetype"
 }
@@ -686,14 +681,8 @@ build_freetype() {
 build_icu() {
     is_done "icu" && return 0
     log_info "Building ICU $ICU_VERSION (~15-20 min)..."
-    # ICU uses dashes in the release tag (release-77-1) and underscores in the
-    # tarball filename (icu4c-77_1-sources.tgz) — neither matches the dot-version string.
-    local icu_tag; icu_tag="release-$(echo "$ICU_VERSION" | tr '.' '-')"
-    local icu_file; icu_file="icu4c-$(echo "$ICU_VERSION" | tr '.' '_')-sources.tgz"
-    safe_download \
-        "https://github.com/unicode-org/icu/releases/download/${icu_tag}/${icu_file}" \
-        "$icu_file" || return 1
-    cd "$BUILD_DIR"; [ ! -d "icu" ] && with_system_env tar -xzf "$icu_file"
+    safe_download "https://github.com/unicode-org/icu/releases/download/release-${ICU_VERSION}/icu4c-${ICU_VERSION}-sources.tgz" "icu4c-${ICU_VERSION}-sources.tgz" || return 1
+    cd "$BUILD_DIR"; [ ! -d "icu" ] && with_system_env tar -xzf "icu4c-${ICU_VERSION}-sources.tgz"
     cd "$BUILD_DIR/icu/source"
     ./configure --prefix="$DEPS_DIR" --libdir="$DEPS_DIR/lib" && \
     make -j"$NPROC" && make install && mark_done "icu"
