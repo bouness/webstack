@@ -518,15 +518,25 @@ build_libxml2() {
     is_done "libxml2" && return 0
     log_info "Building libxml2 $LIBXML2_VERSION..."
     local mm; mm=$(echo "$LIBXML2_VERSION" | cut -d. -f1,2)
-    safe_download "https://github.com/GNOME/libxml2/archive/refs/tags/v$LIBXML2_VERSION.tar.gz" "libxml2-$LIBXML2_VERSION.tar.gz" || \
-    safe_download "https://download.gnome.org/sources/libxml2/$mm/libxml2-$LIBXML2_VERSION.tar.xz" "libxml2-$LIBXML2_VERSION.tar.xz" || return 1
     cd "$BUILD_DIR"
+
     if [ ! -d "libxml2-$LIBXML2_VERSION" ]; then
-        with_system_env tar -xf "libxml2-$LIBXML2_VERSION.tar.gz" 2>/dev/null || \
-        with_system_env tar -xJf "libxml2-$LIBXML2_VERSION.tar.xz"
+        safe_download "https://github.com/GNOME/libxml2/archive/refs/tags/v$LIBXML2_VERSION.tar.gz" "libxml2-$LIBXML2_VERSION.tar.gz" 2>/dev/null || \
+        safe_download "https://download.gnome.org/sources/libxml2/$mm/libxml2-$LIBXML2_VERSION.tar.xz" "libxml2-$LIBXML2_VERSION.tar.xz" || return 1
+
+        if [ -f "libxml2-$LIBXML2_VERSION.tar.gz" ]; then
+            with_system_env tar -xf "libxml2-$LIBXML2_VERSION.tar.gz"
+            # GitHub extracts to libxml2-v$VERSION — rename to expected name
+            if [ -d "libxml2-v$LIBXML2_VERSION" ] && [ ! -d "libxml2-$LIBXML2_VERSION" ]; then
+                mv "libxml2-v$LIBXML2_VERSION" "libxml2-$LIBXML2_VERSION"
+            fi
+        elif [ -f "libxml2-$LIBXML2_VERSION.tar.xz" ]; then
+            with_system_env tar -xJf "libxml2-$LIBXML2_VERSION.tar.xz"
+        fi
     fi
+
+    [ ! -d "libxml2-$LIBXML2_VERSION" ] && { log_error "libxml2 source dir missing after extraction"; return 1; }
     cd "$BUILD_DIR/libxml2-$LIBXML2_VERSION"
-    # GitHub archive has no configure — run autoreconf if needed
     [ ! -f configure ] && with_system_env autoreconf -fi
     ./configure --prefix="$DEPS_DIR" --libdir="$DEPS_DIR/lib" --without-python --without-lzma && \
     make -j"$NPROC" && make install && mark_done "libxml2"
@@ -536,13 +546,24 @@ build_libxslt() {
     is_done "libxslt" && return 0
     log_info "Building libxslt $LIBXSLT_VERSION..."
     local mm; mm=$(echo "$LIBXSLT_VERSION" | cut -d. -f1,2)
-    safe_download "https://github.com/GNOME/libxslt/archive/refs/tags/v$LIBXSLT_VERSION.tar.gz" "libxslt-$LIBXSLT_VERSION.tar.gz" || \
-    safe_download "https://download.gnome.org/sources/libxslt/$mm/libxslt-$LIBXSLT_VERSION.tar.xz" "libxslt-$LIBXSLT_VERSION.tar.xz" || return 1
     cd "$BUILD_DIR"
+
     if [ ! -d "libxslt-$LIBXSLT_VERSION" ]; then
-        with_system_env tar -xf "libxslt-$LIBXSLT_VERSION.tar.gz" 2>/dev/null || \
-        with_system_env tar -xJf "libxslt-$LIBXSLT_VERSION.tar.xz"
+        safe_download "https://github.com/GNOME/libxslt/archive/refs/tags/v$LIBXSLT_VERSION.tar.gz" "libxslt-$LIBXSLT_VERSION.tar.gz" 2>/dev/null || \
+        safe_download "https://download.gnome.org/sources/libxslt/$mm/libxslt-$LIBXSLT_VERSION.tar.xz" "libxslt-$LIBXSLT_VERSION.tar.xz" || return 1
+
+        if [ -f "libxslt-$LIBXSLT_VERSION.tar.gz" ]; then
+            with_system_env tar -xf "libxslt-$LIBXSLT_VERSION.tar.gz"
+            # GitHub extracts to libxslt-v$VERSION — rename to expected name
+            if [ -d "libxslt-v$LIBXSLT_VERSION" ] && [ ! -d "libxslt-$LIBXSLT_VERSION" ]; then
+                mv "libxslt-v$LIBXSLT_VERSION" "libxslt-$LIBXSLT_VERSION"
+            fi
+        elif [ -f "libxslt-$LIBXSLT_VERSION.tar.xz" ]; then
+            with_system_env tar -xJf "libxslt-$LIBXSLT_VERSION.tar.xz"
+        fi
     fi
+
+    [ ! -d "libxslt-$LIBXSLT_VERSION" ] && { log_error "libxslt source dir missing after extraction"; return 1; }
     cd "$BUILD_DIR/libxslt-$LIBXSLT_VERSION"
     [ ! -f configure ] && with_system_env autoreconf -fi
     ./configure --prefix="$DEPS_DIR" --libdir="$DEPS_DIR/lib" \
