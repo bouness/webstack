@@ -162,7 +162,7 @@ install_qt_runtime_deps() {
 # system certificates.  This detects the host distro's CA bundle and
 # injects the correct paths into every PHP webstack.ini.
 #
-fix_php_ssl_certs() {
+php_ssl_certs() {
     log_info "Configuring PHP SSL certificates..."
 
     # ── Detect system CA bundle ────────────────────────────────────────
@@ -326,6 +326,9 @@ else
 
     # Restore directories pruned by CI's "remove empty dirs" step
     mkdir -p /opt/webstack/nginx/logs
+
+    # PHP SSL certificates for current distro
+    php_ssl_certs
 
     echo "[INFO] Compiled stack installed successfully."
 fi
