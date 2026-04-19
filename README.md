@@ -1,12 +1,14 @@
-# WebStack Manager
+# 🚀 Linux Universal Isolated Web Stack
 
-A comprehensive PySide6-based GUI application for managing a portable web development stack (Nginx, PHP-FPM, MariaDB) that runs completely isolated from your system.
+A fully portable, zero-system-dependency web development stack for Linux. Compiles Nginx, multiple PHP versions, MariaDB, and PostgreSQL into an isolated environment at `/opt/webstack`, with per-user data separation.
 
+Includes a **GUI Manager** for easily starting/stopping services, switching PHP versions, and viewing logs.
+
+![GitHub Actions Build](https://img.shields.io/github/actions/workflow/status/bouness/webstack/build-release.yml?style=flat-square)
+![Version](https://img.shields.io/badge/dynamic/json?url=https://api.github.com/repos/bouness/webstack/releases/latest&query=tag_name&label=Release&color=blue)
 ![WebStack Manager](https://img.shields.io/badge/WebStack-Manager-blue)
 ![PySide6](https://img.shields.io/badge/GUI-PySide6-green)
 ![Portable](https://img.shields.io/badge/Architecture-Portable-orange)
-
----
 
 ## 💖 Support Project
 **Bitcoin:** `34Db9CqBjwiFt3SmaPUQPW4Z3QMjMrfVFh`
@@ -15,266 +17,104 @@ A comprehensive PySide6-based GUI application for managing a portable web develo
 
 ![Venmo QR](https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=https://venmo.com/youness-bougteb)
 
-## 🌟 Features
+## ✨ Features
 
-### 🎯 Core Management
-- **Service Control**: Start, stop, and restart Nginx, PHP-FPM, and MariaDB
-- **Multiple PHP Versions**: Switch between installed PHP versions (8.2, 8.3, 8.4)
-- **Real-time Status**: Live monitoring of all services with color-coded status indicators
-- **System Tray Integration**: Minimize to system tray with quick access controls
+- **Fully Isolated**: No system package conflicts. Everything lives in `/opt/webstack`.
+- **Per-User Data**: Configs, databases, and logs are stored in `~/.webstack/`.
+- **Multiple PHP Versions**: Seamlessly switch between PHP 8.5, 8.4, and 8.3 via CLI or GUI.
+- **All Dependencies Bundled**: Custom-compiled OpenSSL, cURL, ICU, libsodium, etc.
+- **GUI Control Panel**: Start/stop services, switch PHP, view logs, and test connections.
+- **Single .run Installer**: Download one file, run it, and you're done. No internet required during installation.
 
-### 🛠️ Advanced Features
-- **Environment Management**: Automatic handling of library paths and dependencies
-- **Comprehensive Diagnostics**: Detailed system health checks and troubleshooting
-- **Auto-Repair**: Fix common issues like broken symlinks and socket configurations
-- **Port Configuration**: Customize Nginx and MySQL ports with live updates
-- **Log Management**: View and clear service logs with auto-refresh capability
+## 📦 What's Inside
 
-### 🧹 Maintenance Tools
-- **Cleanup Operations**: Clean logs, build files, and temporary files
-- **Auto-cleanup**: Automatic cleanup on service stop
-- **Build Management**: Clean build directories to free up disk space
-- **Configuration Repair**: Fix MySQL socket and PHP symlink issues
+| Component | Version | Notes |
+|-----------|---------|-------|
+| Nginx | 1.28.3 | HTTP/2, SSL, FastCGI |
+| PHP | 8.5.5 / 8.4.20 / 8.3.30 | FPM, OPCache JIT, GD, Intl, Sodium, XSL, Zip, PDO |
+| MariaDB | 11.8.6 | Drop-in MySQL replacement |
+| PostgreSQL | 17.9 | Advanced SQL database |
+| OpenSSL | 3.6.2 | Self-compiled, not system version |
 
-## 📋 Requirements
+## 🛠️ Quick Install
 
-### System Requirements
-- **Arch Linux** (or compatible distribution)
-- **Python 3.8+**
-- **Basic build tools**: `gcc`, `make`
-
-### Python Dependencies
-```bash
-pip install PySide6
-```
-
-## 🚀 Installation
-
-### 1. Clone the Repository
-```bash
-git clone https://github.com/bouness/webstack.git
-cd webstack
-```
-
-### 2. Run the Installation Script
-```bash
-# Make the installation script executable
-chmod +x install-webstack.sh
-
-# Run the installation (this will take 1-2 hours)
-./install-webstack.sh
-```
-
-The installation script will:
-- Compile all dependencies from source
-- Install Nginx, PHP (multiple versions), and MariaDB
-- Set up the complete isolated environment in `~/webstack`
-- Create management scripts and configuration files
-
-### 3. Start the GUI
-```bash
-# Run the WebStack Manager GUI
-python3 cp.py
-```
-
-## 🎮 Usage
-
-### Starting the Stack
-1. Launch the WebStack Manager GUI
-2. Click **"Start All"** in the Status tab
-3. Access your web server at `http://localhost:8080`
-
-### Managing Services
-
-#### Status Tab
-- View real-time service status (Running/Stopped)
-- Quick actions: Start All, Stop All, Restart All
-- System information and stack health
-
-#### Control Tab
-- **Individual Service Control**: Start/stop/restart each service separately
-- **PHP Version Management**: Switch between installed PHP versions
-- **Environment Configuration**: Load and monitor library paths
-- **Maintenance Tools**: Clean logs, build files, and fix common issues
-
-#### Diagnostics Tab
-- **Run Diagnostics**: Comprehensive system health check
-- **Auto-Repair**: Fix common configuration issues automatically
-- **Library Check**: Verify all required libraries are available
-- **ICU Check**: Test ICU library functionality for PHP internationalization
-
-#### Settings Tab
-- **Port Configuration**: Change Nginx and MySQL ports
-- **Behavior Settings**: Auto-start, auto-stop, and tray behavior
-- **Save/Restore**: Persistent application settings
-
-#### Logs Tab
-- View service logs (Nginx, PHP, MySQL, System)
-- Auto-refresh capability
-- Clear individual log files
-
-### System Tray
-- Right-click tray icon for quick actions
-- Double-click to show/hide main window
-- Service status indicators
-
-## 🔧 Configuration
-
-### Port Configuration
-1. Go to **Settings** tab
-2. Change Nginx port (default: 8080) or MySQL port (default: 3306)
-3. Click **"Apply Port Changes"**
-4. Restart services for changes to take effect
-
-### PHP Version Switching
-1. Go to **Control** tab  
-2. Select desired PHP version from dropdown
-3. PHP-FPM will automatically restart with the new version
-
-### Environment Management
-- Click **"Load Environment"** to set up library paths
-- Use **"Source env.sh"** to force reload environment variables
-- Environment is automatically loaded on application start
-
-## 🗂️ Project Structure
-
-```
-~/webstack/
-├── nginx/                 # Nginx installation
-│   ├── nginx             # Nginx binary
-│   ├── conf/             # Configuration files
-│   └── logs/             # Access and error logs
-├── php/                  # PHP installations
-│   ├── 8.2/             # PHP 8.2 installation
-│   ├── 8.3/             # PHP 8.3 installation  
-│   ├── 8.4/             # PHP 8.4 installation
-│   └── current -> 8.4/  # Active PHP version symlink
-├── mariadb/              # MariaDB installation
-│   ├── bin/              # Database binaries
-│   ├── data/             # Database files
-│   ├── logs/             # Database logs
-│   └── my.cnf            # Database configuration
-├── deps/                 # Compiled dependencies
-│   └── lib/              # Library files
-├── www/                  # Web root directory
-│   └── index.php         # Test page
-├── build/                # Build directory (can be cleaned)
-├── downloads/            # Downloaded source files
-├── bin/                  # Management scripts
-├── logs/                 # Application logs
-└── env.sh               # Environment setup script
-```
-
-## 🛠️ Troubleshooting
-
-### Common Issues
-
-#### Services Won't Start
-1. Run **"Auto-Repair"** in Diagnostics tab
-2. Check **"Fix MySQL Socket"** if MySQL has socket issues
-3. Verify environment is loaded with **"Load Environment"**
-
-#### Library Loading Issues
-1. Use **"Check Libraries"** in Diagnostics tab
-2. Ensure `env.sh` is properly sourced
-3. Run **"Auto-Repair"** to fix library paths
-
-#### PHP Version Problems
-1. Use **"Fix Symlinks"** to repair PHP version links
-2. Verify PHP installations in Diagnostics tab
-3. Check that PHP binaries exist in respective version directories
-
-### Manual Commands
-
-If the GUI isn't working, you can use the command-line scripts:
+1. Download the latest `.run` file from the [Releases](../../releases) page.
+2. Make it executable and run it (do **NOT** use `sudo`):
 
 ```bash
-# Start all services
-~/.local/bin/webstack-start
-
-# Stop all services  
-~/.local/bin/webstack-stop
-
-# Switch PHP version
-~/.local/bin/webstack-php 8.3
-
-# MySQL client
-~/.local/bin/webstack-mysql
+chmod +x webstack-installer-*.run
+./webstack-installer-*.run
 ```
 
-## 🔍 Diagnostics
+3. Add CLI tools to your PATH:
+```bash
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
+source ~/.bashrc
+```
 
-The application includes comprehensive diagnostics:
+4. Start the stack:
+```bash
+webstack-start
+```
 
-### Service Checks
-- Verifies all service binaries exist
-- Checks configuration file integrity
-- Validates socket configurations
+5. Open [http://localhost:8080](http://localhost:8080) in your browser.
 
-### Library Verification
-- ICU library detection and functionality testing
-- PHP extension availability
-- Runtime library dependency checking
+## 🖥️ Usage
 
-### Configuration Validation
-- MySQL socket path verification
-- PHP symlink integrity
-- Port configuration consistency
+### CLI Tools
+```bash
+webstack-start        # Start all services
+webstack-stop         # Stop all services
+webstack-php 8.4      # Switch active PHP version
+webstack-php-cli -v   # Run PHP CLI commands
+webstack-mysql        # Open MariaDB shell
+webstack-psql         # Open PostgreSQL shell
+webstack-manager      # Open GUI control panel
+```
 
-## 📊 Logging
+### GUI Manager
+Search for **"WebStack Manager"** in your desktop application menu, or run `webstack-manager` in a terminal. 
+*(Note: Requires a display server. For SSH, use `ssh -X`)*.
 
-### Application Logs
-- Located at `~/webstack/webstack_manager.log`
-- Tracks all GUI actions and service commands
+### Default Credentials
+| Service | User | Password |
+|---------|------|----------|
+| MariaDB | root | `123456` |
+| MariaDB | webstack | `webstack` |
+| PostgreSQL | postgres | `123456` |
 
-### Service Logs
-- **Nginx**: `~/webstack/nginx/logs/`
-- **PHP-FPM**: `~/webstack/php/current/logs/`
-- **MariaDB**: `~/webstack/mariadb/logs/`
+## 🏗️ Architecture
 
-## 🚨 Important Notes
+WebStack is split into two distinct locations:
 
-### Isolation
-- All services run completely isolated from system installations
-- No root access required for installation or operation
-- All dependencies are compiled from source
+- **`/opt/webstack`** (System-wide, shared): Contains compiled binaries and libraries. This is the only part packaged in the `.run` release file.
+- **`~/.webstack/`** (Per-user): Contains runtime data, sockets, PID files, and configs (e.g., `nginx.conf`, `my.cnf`).
+- **`~/webstack-www/`** (Per-user): The Nginx document root for your projects.
 
-### Portability
-- The entire stack can be moved to another machine by copying the `~/webstack` directory
-- All paths are relative and self-contained
+## 🧹 Uninstalling
 
-### Security
-- MariaDB runs with binding to localhost only
-- No external network access by default
-- Isolated from system MySQL installations
+Run the bundled uninstaller:
+```bash
+webstack-uninstall
+```
+This safely stops services, removes `/opt/webstack` and `~/.webstack`, and asks for confirmation before deleting `~/webstack-www` (your project files).
 
-## 🤝 Contributing
+## 🔧 Build
 
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
+**Build Environment:** Ubuntu 22.04 (for maximum glibc compatibility across Linux distros).
+**Build Time:** ~2-3 hours (mostly ICU and MariaDB compilation).
 
-## 📝 License
+## 📁 Repository Structure
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## 🙏 Acknowledgments
-
-- Built with [PySide6](https://www.qt.io/qt-for-python) for the GUI
-- Portable compilation techniques inspired by static linking principles
-- Service management patterns from production deployment best practices
-
-## 📞 Support
-
-If you encounter any issues:
-
-1. Check the **Diagnostics** tab for automated troubleshooting
-2. Review the application logs in `~/webstack/webstack_manager.log`
-3. Check service-specific logs in their respective directories
-4. Open an issue on GitHub with detailed error information
-
----
-
-**WebStack Manager** - Your portable, isolated web development environment made easy! 🚀
+```
+├── .github/workflows/build-release.yml
+├── ci/
+│   ├── setup.sh          # Embedded in .run: copies to /opt, runs Phase 2
+│   └── uninstall.sh      # Embedded in .run: safe removal
+├── docs/
+│   └── index.html        # WebStack Documentation
+├── cp.py                 # Python GUI Manager source
+├── install.sh            # Main installer script (Phase 1 & 2)
+├── LICENSE
+└── README.md
+```
