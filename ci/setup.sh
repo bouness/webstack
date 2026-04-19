@@ -154,6 +154,65 @@ install_qt_runtime_deps() {
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
+#  PHP SSL CERTIFICATES
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# PHP's openssl and curl extensions default to no CA bundle.
+# We compile OpenSSL ourselves, so PHP doesn't automatically find the
+# system certificates.  This detects the host distro's CA bundle and
+# injects the correct paths into every PHP webstack.ini.
+#
+fix_php_ssl_certs() {
+    log_info "Configuring PHP SSL certificates..."
+
+    # ── Detect system CA bundle ────────────────────────────────────────
+    local ca_bundle=""
+    for candidate in \
+        /etc/ssl/certs/ca-certificates.crt \
+        /etc/pki/tls/certs/ca-bundle.crt \
+        /etc/ssl/ca-bundle.pem \
+        /etc/ssl/cert.pem; do
+        if [ -f "$candidate" ]; then
+            ca_bundle="$candidate"
+            break
+        fi
+    done
+
+    if [ -z "$ca_bundle" ]; then
+        log_warn "No system CA bundle found — HTTPS may not work in PHP"
+        log_warn "Install ca-certificates via your package manager"
+        return 0
+    fi
+
+    log_ok "Found CA bundle: $ca_bundle"
+
+    # ── Patch every webstack.ini ───────────────────────────────────────
+    local patched=0
+    for ini_file in /opt/webstack/php/*/etc/conf.d/webstack.ini; do
+        [ -f "$ini_file" ] || continue
+
+        # Don't add if already present (reinstall scenario)
+        if grep -q "openssl.cafile" "$ini_file" 2>/dev/null; then
+            # Update existing paths in case distro changed
+            sed -i "s|^openssl.cafile=.*|openssl.cafile=$ca_bundle|" "$ini_file"
+            sed -i "s|^curl.cainfo=.*|curl.cainfo=$ca_bundle|" "$ini_file"
+        else
+            echo "" >> "$ini_file"
+            echo "; ── System CA certificates (auto-detected by installer) ──" >> "$ini_file"
+            echo "openssl.cafile=$ca_bundle" >> "$ini_file"
+            echo "curl.cainfo=$ca_bundle" >> "$ini_file"
+        fi
+        patched=$((patched + 1))
+    done
+
+    if [ "$patched" -gt 0 ]; then
+        log_ok "Patched $patched PHP webstack.ini file(s)"
+    else
+        log_warn "No webstack.ini files found to patch"
+    fi
+}
+
+# ══════════════════════════════════════════════════════════════════════════════
 #  SETUP CONTROL PANEL
 # ══════════════════════════════════════════════════════════════════════════════
 setup_control_panel() {
