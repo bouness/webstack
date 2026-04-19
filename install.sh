@@ -1350,17 +1350,30 @@ PHPCLI_EOF
 #!/bin/bash
 INST="$(dirname "$(readlink -f "$0")")/.."
 [ -f "$INST/.paths" ] && . "$INST/.paths"
+if [ ! -L "$USER_DIR/php/current" ]; then
+    echo "No PHP version selected. Run: webstack-php <version>"; exit 1
+fi
+CUR=$(basename "$(readlink "$USER_DIR/php/current")")
+PHP_BIN="$INSTALL_DIR/php/$CUR/bin/php"
 COMPOSER_BIN="$USER_DIR/bin/composer.phar"
 if [ ! -f "$COMPOSER_BIN" ]; then
-    EXPECTED_CHECKSUM="$(wget -qO- https://composer.github.io/installer.sig)"
-    php -r "copy('https://getcomposer.org/installer', '$COMPOSER_BIN.installer');"
-    php "$COMPOSER_BIN.installer" --install-dir="$USER_DIR/bin" --filename=composer.phar
-    rm -f "$COMPOSER_BIN.installer"
+    echo "Installing Composer..."
+    EXPECTED_CHECKSUM="$(curl -sS https://composer.github.io/installer.sig)"
+    curl -sS -o "$USER_DIR/bin/composer.installer" https://getcomposer.org/installer
+    ACTUAL_CHECKSUM="$( "$PHP_BIN" -r "echo hash_file('sha384', '$USER_DIR/bin/composer.installer');")"
+    if [ "$EXPECTED_CHECKSUM" != "$ACTUAL_CHECKSUM" ]; then
+        echo "ERROR: Composer installer checksum mismatch!"
+        echo "Expected: $EXPECTED_CHECKSUM"
+        echo "Actual:   $ACTUAL_CHECKSUM"
+        rm -f "$USER_DIR/bin/composer.installer"
+        exit 1
+    fi
+    "$PHP_BIN" "$USER_DIR/bin/composer.installer" \
+        --install-dir="$USER_DIR/bin" --filename=composer.phar
+    rm -f "$USER_DIR/bin/composer.installer"
+    echo "Composer installed."
 fi
-if [ -L "$USER_DIR/php/current" ]; then
-    CUR=$(basename "$(readlink "$USER_DIR/php/current")")
-    exec "$INSTALL_DIR/php/$CUR/bin/php" "$COMPOSER_BIN" "$@"
-else echo "No PHP version selected. Run: webstack-php <version>"; exit 1; fi
+exec "$PHP_BIN" "$COMPOSER_BIN" "$@"
 COMP_EOF
 
     chmod +x "$bindir"/*.sh
