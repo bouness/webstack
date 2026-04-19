@@ -189,6 +189,11 @@ WRAPPER_EOF
     chmod +x "$HOME/.local/bin/webstack-manager"
     log_ok "Created ~/.local/bin/webstack-manager"
 
+    # ── Uninstaller symlink ────────────────────────────────────────────
+    ln -sf /opt/webstack/uninstall.sh "$HOME/.local/bin/webstack-uninstall"
+    chmod +x /opt/webstack/uninstall.sh 2>/dev/null || true
+    log_ok "Created ~/.local/bin/webstack-uninstall"
+
     # ── Desktop entry (application menu integration) ───────────────────
     local desktop_dir="$HOME/.local/share/applications"
     mkdir -p "$desktop_dir"
