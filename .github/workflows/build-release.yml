@@ -175,6 +175,7 @@ jobs:
           cp -a /opt/webstack/. "$STAGING/webstack/"
           cp install.sh "$STAGING/installer.sh"
           cp ci/setup.sh "$STAGING/setup.sh"
+          cp ci/uninstall.sh "$STAGING/webstack/uninstall.sh"
           chmod +x "$STAGING/setup.sh"
 
           echo "Staging size:"
