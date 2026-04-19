@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebStack Documentation</title>
+    <style>
+        :root { --primary: #2563eb; --bg: #f8fafc; --border: #e2e8f0; --text: #334155; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 40px 20px; background: var(--bg); color: var(--text); line-height: 1.6; }
+        .container { max-width: 900px; margin: 0 auto; background: #fff; padding: 40px; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0,0,0,.1); border: 1px solid var(--border); }
+        h1 { color: #1e293b; margin-top: 0; font-size: 1.8em; border-bottom: 2px solid var(--primary); padding-bottom: 10px; }
+        h2 { color: var(--primary); margin-top: 2em; font-size: 1.3em; }
+        h3 { color: #475569; font-size: 1.1em; }
+        code { background: #f1f5f9; padding: 2px 6px; border-radius: 4px; font-family: "Fira Code", "Courier New", monospace; font-size: 0.9em; color: #0f172a; }
+        pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; font-size: 0.9em; }
+        pre code { background: none; padding: 0; color: inherit; }
+        table { width: 100%; border-collapse: collapse; margin: 1.5em 0; font-size: 0.95em; }
+        th, td { text-align: left; padding: 12px 15px; border-bottom: 1px solid var(--border); }
+        th { background: var(--bg); color: #475569; font-weight: 600; }
+        .badge { display: inline-block; background: #dbeafe; color: var(--primary); padding: 2px 8px; border-radius: 12px; font-size: 0.8em; font-weight: 600; }
+        .note { border-left: 4px solid var(--primary); background: #eff6ff; padding: 12px 16px; margin: 1.5em 0; border-radius: 0 4px 4px 0; }
+        a { color: var(--primary); text-decoration: none; }
+        a:hover { text-decoration: underline; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🚀 WebStack Documentation</h1>
+        <p>Your portable, isolated web development environment is running.</p>
+
+        <h2>⚡ Quick Start</h2>
+        <p>You can manage your stack via the <strong>GUI Manager</strong> (look for <em>WebStack Manager</em> in your app menu) or the <strong>CLI tools</strong> below.</p>
+        <pre><code># Start all services
+webstack-start
+
+# Open this documentation & test page
+# Visit: http://localhost:8080</code></pre>
+
+        <h2>🖥️ CLI Tools Reference</h2>
+        <table>
+            <tr><th>Command</th><th>Description</th></tr>
+            <tr><td><code>webstack-start</code></td><td>Start all services (Postgres, MariaDB, PHP, Nginx)</td></tr>
+            <tr><td><code>webstack-stop</code></td><td>Stop all services gracefully</td></tr>
+            <tr><td><code>webstack-php 8.5</code></td><td>Switch active PHP version (requires restart)</td></tr>
+            <tr><td><code>webstack-php-cli</code></td><td>Run PHP CLI using the active version</td></tr>
+            <tr><td><code>webstack-composer</code></td><td>Run Composer using the active PHP version</td></tr>
+            <tr><td><code>webstack-mysql</code></td><td>Open MariaDB CLI client</td></tr>
+            <tr><td><code>webstack-psql</code></td><td>Open PostgreSQL CLI client</td></tr>
+            <tr><td><code>webstack-manager</code></td><td>Open the GUI control panel</td></tr>
+            <tr><td><code>webstack-uninstall</code></td><td>Remove WebStack completely</td></tr>
+        </table>
+
+        <h2>🗄️ Database Access</h2>
+        <table>
+            <tr><th>Service</th><th>User</th><th>Password</th><th>Socket / Port</th></tr>
+            <tr><td>MariaDB (Root)</td><td><code>root</code></td><td><code>123456</code></td><td>Socket: <code>~/.webstack/mariadb/mariadb.sock</code></td></tr>
+            <tr><td>MariaDB (App)</td><td><code>webstack</code></td><td><code>webstack</code></td><td>Port: <code>3306</code></td></tr>
+            <tr><td>PostgreSQL</td><td><code>postgres</code></td><td><code>123456</code></td><td>Port: <code>5432</code></td></tr>
+        </table>
+        <div class="note">
+            <strong>Note:</strong> Databases use local sockets by default for better security and performance. If using GUI tools like DBeaver or DataGrip, use the socket path or connect via <code>127.0.0.1</code> on the specified ports.
+        </div>
+
+        <h2>🐘 Switching PHP Versions</h2>
+        <p>Multiple PHP versions are installed. Switch between them seamlessly:</p>
+        <pre><code># Switch to PHP 8.4
+webstack-php 8.4
+
+# Verify active version
+webstack-php-cli -v</code></pre>
+        <p>This updates the CLI, stops the old PHP-FPM pool, and starts the new one. Your web root (<code>~/webstack-www</code>) will immediately use the new version.</p>
+
+        <h2>📁 File Structure</h2>
+        <p>WebStack is split into two locations to keep binaries isolated from your data:</p>
+        <table>
+            <tr><th>Path</th><th>Purpose</th><th>Shared?</th></tr>
+            <tr><td><code>/opt/webstack</code></td><td>Compiled binaries, dependencies, GUI manager</td><td><span class="badge">Yes</span> (System-wide)</td></tr>
+            <tr><td><code>~/.webstack</code></td><td>Configs, databases, logs, PID files</td><td><span class="badge">No</span> (Per-user)</td></tr>
+            <tr><td><code>~/webstack-www</code></td><td>Your web projects / document root</td><td><span class="badge">No</span> (Per-user)</td></tr>
+        </table>
+
+        <h2>⚙️ Configuration Files</h2>
+        <ul>
+            <li><strong>Nginx:</strong> <code>~/.webstack/nginx/nginx.conf</code></li>
+            <li><strong>PHP:</strong> <code>~/.webstack/php/&lt;version&gt;/php-fpm.conf</code> &amp; <code>php.ini</code></li>
+            <li><strong>MariaDB:</strong> <code>~/.webstack/mariadb/my.cnf</code></li>
+            <li><strong>PostgreSQL:</strong> <code>~/.webstack/postgresql/data/pg_hba.conf</code></li>
+        </ul>
+
+        <h2>🔧 Troubleshooting</h2>
+        <h3>Port 8080 is already in use</h3>
+        <p>Change the Nginx port in <code>~/.webstack/nginx/nginx.conf</code> (change <code>listen 8080;</code> to your desired port), then restart Nginx.</p>
+
+        <h3>GUI Manager won't open via SSH</h3>
+        <p>The GUI requires a display server. Connect with X-forwarding: <code>ssh -X user@host</code>, then run <code>webstack-manager</code>.</p>
+
+        <h3>Services won't start after reboot</h3>
+        <p>WebStack does not auto-start on boot by design (it's a development environment). Run <code>webstack-start</code> after logging in.</p>
+
+        <br>
+        <p style="text-align: center; color: #94a3b8; font-size: 0.9em;">
+            WebStack Portable Environment &bull; Built with Nginx, PHP, MariaDB, PostgreSQL &bull; Managed by PySide6
+        </p>
+    </div>
+</body>
+</html>
