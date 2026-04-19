@@ -288,6 +288,12 @@ echo ""
 # ══════════════════════════════════════════════════════════════════════════════
 #  RUN PHASE 2 (USER SETUP)
 # ══════════════════════════════════════════════════════════════════════════════
+# ── Copy documentation to web root ──────────────────────────────────
+if [ -d "$SELFDIR/docs" ]; then
+    mkdir -p "$HOME/webstack-www"
+    cp -a "$SELFDIR/docs" "$HOME/webstack-www/docs"
+fi
+
 echo "[INFO] Starting user environment setup..."
 echo ""
 
