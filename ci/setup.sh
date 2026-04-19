@@ -265,6 +265,9 @@ else
     sudo cp -a "$SELFDIR/webstack" /opt/webstack
     sudo chown -R "$USER:$(id -gn)" /opt/webstack
 
+    # Restore directories pruned by CI's "remove empty dirs" step
+    mkdir -p /opt/webstack/nginx/logs
+
     echo "[INFO] Compiled stack installed successfully."
 fi
 
