@@ -36,6 +36,11 @@ Includes a **GUI Manager** for easily starting/stopping services, switching PHP 
 | PostgreSQL | 17.9 | Advanced SQL database |
 | OpenSSL | 3.6.2 | Self-compiled, not system version |
 
+## 🔽 Download
+
+[⬇️ Download Latest Release](https://github.com/bouness/webstack/releases/latest)
+
+[![Download Latest Release](https://img.shields.io/github/v/release/bouness/webstack?label=Download&style=for-the-badge)](https://github.com/bouness/webstack/releases/latest)
 ## 🛠️ Quick Install
 
 1. Download the latest `.run` file from the [Releases](../../releases) page.
